@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import date, datetime
 import json
 import math
 import os
@@ -73,6 +73,17 @@ def validate(data):
                 raise InvalidTree('开始或截止时间格式错误')
         if n.get('start_at', 0) and n.get('due_at', 0) and n['due_at'] < n['start_at']:
             raise InvalidTree('截止时间不能早于开始时间')
+        if type(n.get('priority', False)) is not bool:
+            raise InvalidTree('优先标记格式错误')
+        planned = n.get('planned_for', '')
+        if not isinstance(planned, str):
+            raise InvalidTree('预计完成日期格式错误')
+        if planned:
+            try:
+                if date.fromisoformat(planned).isoformat() != planned:
+                    raise ValueError
+            except ValueError as error:
+                raise InvalidTree('预计完成日期应为 YYYY-MM-DD') from error
         if type(n.get('collapsed', False)) is not bool:
             raise InvalidTree('折叠状态格式错误')
         if not isinstance(n.get('details', []), list):
@@ -197,7 +208,7 @@ class Forest:
             pending.extend(nodes[item]['children'] + nodes[item].get('details', []))
         return result
 
-    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card'):
+    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card', planned_for='', priority=False):
         title = title.strip()
         if not title:
             raise InvalidTree('请填写任务名称')
@@ -208,7 +219,7 @@ class Forest:
         def action(data):
             nodes = data['nodes']
             node = dict(title=title, kind='task' if target else 'category', children=[],
-                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation)
+                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation, planned_for=planned_for, priority=priority)
             if target is None:
                 data['roots'].append(key)
             elif presentation == 'line':
@@ -263,7 +274,7 @@ class Forest:
         return self.change(action)
 
     def edit(self, key, **values):
-        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed', 'presentation'}
+        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed', 'presentation', 'planned_for', 'priority'}
         if key == self.inbox and values.get('title', INBOX_TITLE) != INBOX_TITLE:
             raise InvalidTree('零散任务是常驻分类，不能重命名')
         if set(values) - allowed:
@@ -338,7 +349,33 @@ class Forest:
             if scope == 'overdue' and not (0 < node.get('due_at', 0) < now):
                 continue
             result.append((self.category(key), key))
-        return sorted(result, key=lambda pair: min(self.nodes[pair[1]].get(field, 0) or float('inf') for field in ('start_at', 'due_at')))
+        return sorted(result, key=lambda pair: (not self.nodes[pair[1]].get('priority', False), min(self.nodes[pair[1]].get(field, 0) or float('inf') for field in ('start_at', 'due_at'))))
+
+    def planned_today(self, now=None):
+        """Incomplete plans and scheduled work carry forward without changing deadlines."""
+        now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now).date()
+        result = []
+        for key, node in self.nodes.items():
+            if node['kind'] != 'task':
+                continue
+            planned = node.get('planned_for', '')
+            manual = bool(planned and date.fromisoformat(planned) <= today)
+            timed = any(node.get(field) and datetime.fromtimestamp(node[field]).date() <= today for field in ('start_at', 'due_at'))
+            if manual or timed:
+                result.append((self.category(key), key))
+        return sorted(result, key=lambda pair: not self.nodes[pair[1]].get('priority', False))
+
+    def today_source(self, key, now=None):
+        now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now).date()
+        node = self.nodes[key]
+        if ((node.get('planned_for') and date.fromisoformat(node['planned_for']) < today)
+                or any(node.get(field) and datetime.fromtimestamp(node[field]).date() < today for field in ('start_at', 'due_at'))):
+            return '已顺延'
+        if any(node.get(field) and datetime.fromtimestamp(node[field]).date() == today for field in ('start_at', 'due_at')):
+            return '今日定时'
+        return '今日预计'
 
     def import_file(self, path):
         candidate = validate(json.loads(Path(path).read_text()))

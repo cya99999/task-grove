@@ -4,13 +4,14 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from pathlib import Path
 import tempfile
 import time
+from datetime import date
 import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt, QPointF, QMimeData, QDateTime
 from PySide6.QtGui import QDropEvent, QContextMenuEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 from task_grove.app import Window, STYLE, MIME, TaskDialog, FineBranchesDialog, apply_theme
 from task_grove.model import Forest
 
@@ -81,7 +82,8 @@ class GuiTests(unittest.TestCase):
     def test_scheduled_list_includes_deep_nodes_across_categories(self):
         self.forest.edit('note', due_at=time.time() + 500)
         self.window.locate('water')
-        self.window.refresh_scheduled()
+        self.window.task_tabs.setCurrentIndex(1)
+        self.window.refresh_bottom()
         self.assertIn('2 项', self.window.ready_label.text())
         self.assertEqual(self.window.ready_list.count(), 2)
 
@@ -204,6 +206,34 @@ class GuiTests(unittest.TestCase):
         self.assertGreater(detail.y(), owner.y() + owner.height)
         self.assertLess(detail.x(), following.x())
         self.assertAlmostEqual(owner.y()+owner.anchor_y, following.y()+following.anchor_y)
+
+    def test_today_tab_is_default_and_priority_tasks_are_first(self):
+        self.assertEqual(self.window.task_tabs.currentIndex(), 0)
+        self.assertFalse(self.window.time_filter.isVisible())
+        self.forest.edit('read', planned_for=date.today().isoformat(), priority=True)
+        self.window.refresh()
+        row = self.window.ready_list.itemWidget(self.window.ready_list.item(0))
+        labels = [label.text() for label in row.findChildren(QLabel)]
+        self.assertIn('★ 优先', labels)
+        self.assertIn(self.forest.nodes['read']['title'], labels)
+        self.window.task_tabs.setCurrentIndex(1)
+        self.assertTrue(self.window.time_filter.isVisible())
+
+    def test_editor_saves_today_and_priority_flags(self):
+        dialog = TaskDialog(self.window, '编辑', self.forest.nodes['read'])
+        dialog.plan_today.setChecked(True)
+        dialog.priority.setChecked(True)
+        self.assertEqual(dialog.values()['planned_for'], date.today().isoformat())
+        self.assertTrue(dialog.values()['priority'])
+        dialog.plan_today.setChecked(False)
+        self.assertEqual(dialog.values()['planned_for'], '')
+
+    def test_editing_title_keeps_original_carried_plan_date(self):
+        node = dict(title='未完成任务', planned_for='2026-01-01', priority=True)
+        dialog = TaskDialog(self.window, '编辑', node)
+        dialog.name.setText('改名后继续处理')
+        self.assertEqual(dialog.values()['planned_for'], '2026-01-01')
+        self.assertTrue(dialog.values()['priority'])
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import tempfile
@@ -235,6 +236,72 @@ class ForestTests(unittest.TestCase):
             self.f.edit(self.r, presentation='line')
         with self.assertRaises(InvalidTree):
             self.f.add('新类别', presentation='line')
+
+    def test_today_contains_manual_plans_and_deep_scheduled_tasks(self):
+        now = datetime(2026, 11, 7, 9).timestamp()
+        self.f.edit(self.b, planned_for='2026-11-07')
+        detail = self.f.add_lines(self.a, ['今天的细节'])[0]
+        self.f.edit(detail, due_at=now + 3600)
+        tomorrow = self.f.add('明天的任务', self.r, start_at=now + 86400)
+        today = {key for _, key in self.f.planned_today(now)}
+        self.assertEqual(today, {self.b, detail})
+        self.assertNotIn(tomorrow, today)
+
+    def test_priority_is_marked_and_first_in_both_lists(self):
+        now = datetime(2026, 11, 7, 9).timestamp()
+        self.f.edit(self.b, planned_for='2026-11-07', due_at=now + 100)
+        self.f.edit(self.c, planned_for='2026-11-07', due_at=now + 200, priority=True)
+        self.assertEqual(self.f.planned_today(now)[0][1], self.c)
+        self.assertEqual(self.f.scheduled(now=now)[0][1], self.c)
+
+    def test_unfinished_manual_plan_rolls_over_without_changing_deadlines(self):
+        now = datetime(2026, 11, 7, 23, 59).timestamp()
+        self.f.edit(self.b, planned_for='2026-11-07', due_at=now + 86400)
+        before = self.path.read_bytes()
+        for stamp in (now, now + 120, now + 5 * 86400):
+            self.assertIn((self.r, self.b), self.f.planned_today(stamp))
+        self.assertEqual(self.f.today_source(self.b, now + 120), '已顺延')
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.f.nodes[self.b]['due_at'], now + 86400)
+
+    def test_unfinished_scheduled_work_is_automatically_carried_forward(self):
+        now = datetime(2026, 11, 7, 9).timestamp()
+        self.f.edit(self.b, start_at=now + 3600)
+        self.assertIn((self.r, self.b), self.f.planned_today(now))
+        self.assertIn((self.r, self.b), self.f.planned_today(now + 86400))
+        self.assertEqual(self.f.today_source(self.b, now + 86400), '已顺延')
+        self.f.complete(self.b)
+        self.assertNotIn((self.r, self.b), self.f.planned_today(now + 2 * 86400))
+
+    def test_priority_alone_does_not_add_an_unplanned_task_to_today(self):
+        now = datetime(2026, 11, 7, 9).timestamp()
+        self.f.edit(self.b, priority=True)
+        self.assertNotIn((self.r, self.b), self.f.planned_today(now))
+
+    def test_invalid_plan_flags_do_not_change_saved_data(self):
+        before = self.path.read_bytes()
+        for values in ({'priority':'yes'}, {'priority':1}, {'planned_for':False}, {'planned_for':'2026-02-30'}, {'planned_for':'tomorrow'}):
+            with self.assertRaises(InvalidTree):
+                self.f.edit(self.b, **values)
+            self.assertEqual(self.path.read_bytes(), before)
+
+    def test_plan_flags_survive_export_import_undo_and_reload(self):
+        self.f.edit(self.b, planned_for='2026-11-07', priority=True)
+        exported = Path(self.temp.name) / 'plan-export.json'
+        self.f.export_file(exported)
+        self.f.edit(self.b, planned_for='', priority=False)
+        self.f.import_file(exported)
+        loaded = Forest(self.path)
+        self.assertTrue(loaded.nodes[self.b]['priority'])
+        self.assertEqual(loaded.nodes[self.b]['planned_for'], '2026-11-07')
+        self.f.undo()
+        self.assertFalse(self.f.nodes[self.b]['priority'])
+
+    def test_old_nodes_default_to_unplanned_without_migration(self):
+        before = self.path.read_bytes()
+        self.assertEqual(self.f.planned_today(datetime(2026,11,7,9).timestamp()), [])
+        self.assertEqual(Forest(self.path).data, self.f.data)
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == '__main__':

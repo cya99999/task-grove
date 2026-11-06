@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsObject, QMenu,
     QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QMessageBox,
     QFileDialog, QSystemTrayIcon, QFrame, QAbstractItemView, QSizePolicy,
-    QCheckBox, QDateTimeEdit, QPlainTextEdit)
+    QCheckBox, QDateTimeEdit, QPlainTextEdit, QTabBar)
 
 from .model import Forest, InvalidTree
 from . import desktop
@@ -77,6 +78,9 @@ QScrollBar::handle:vertical { background: #c7d4c5; border-radius: 4px; min-heigh
 QScrollBar:horizontal { height: 9px; background: transparent; }
 QScrollBar::handle:horizontal { background: #c7d4c5; border-radius: 4px; min-width: 25px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QTabBar::tab { background: transparent; color: #718376; border-bottom: 2px solid transparent; padding: 7px 10px; }
+QTabBar::tab:selected { color: #28664f; border-bottom-color: #28664f; font-weight: 600; }
+QLabel#priority { color: #8a5a16; background: #fbefd5; border-radius: 5px; padding: 3px 6px; font-size: 11px; }
 QToolTip { background: #253e33; color: white; border: none; padding: 6px; }
 '''
 
@@ -171,6 +175,18 @@ class TaskDialog(QDialog):
             self.presentation.addItem('细分支（文字与横线）', 'line')
             self.presentation.setCurrentIndex(1 if self.original.get('presentation') == 'line' else 0)
             form.addRow('显示形式', self.presentation)
+            plan_row = QHBoxLayout()
+            self.plan_today = QCheckBox('建议今日完成')
+            self.plan_today.setChecked(bool(self.original.get('planned_for')))
+            self.plan_dirty = False
+            self.plan_today.toggled.connect(lambda checked: setattr(self, 'plan_dirty', True))
+            self.priority = QCheckBox('优先')
+            self.priority.setChecked(self.original.get('priority', False))
+            plan_row.addWidget(self.plan_today)
+            plan_row.addSpacing(20)
+            plan_row.addWidget(self.priority)
+            plan_row.addStretch()
+            form.addRow('任务计划', plan_row)
             form.addRow('预计用时', self.minutes)
             for field, label in (('start_at', '开始时间'), ('due_at', '截止时间')):
                 row = QWidget()
@@ -240,6 +256,8 @@ class TaskDialog(QDialog):
         values = dict(title=self.name.text().strip(), minutes=self.minutes.value())
         if not self.category:
             values['presentation'] = self.presentation.currentData()
+            values['priority'] = self.priority.isChecked()
+            values['planned_for'] = (date.today().isoformat() if self.plan_dirty or not self.original.get('planned_for') else self.original['planned_for']) if self.plan_today.isChecked() else ''
         for field, (check, editor) in self.time_inputs.items():
             values[field] = (editor.dateTime().toSecsSinceEpoch() if field in self.time_dirty else self.original.get(field, 0)) if check.isChecked() else 0
         return values
@@ -341,7 +359,7 @@ class Card(QGraphicsObject):
         font.setPixelSize(13)
         font.setBold(self.root)
         p.setFont(font)
-        text = self.node['title']
+        text = ('★ ' if self.node.get('priority') else '') + self.node['title']
         text_x = 14 if self.root else 40
         text_width = 182 if self.root else 154
         if not self.root:
@@ -791,13 +809,20 @@ class Window(QMainWindow):
         divider.setStyleSheet('color: #e0e7da;')
         content.addWidget(divider)
         ready_top = QHBoxLayout()
-        self.ready_label = QLabel('已定时任务')
-        self.ready_label.setStyleSheet('font-weight: 600;')
-        ready_top.addWidget(self.ready_label, 1)
+        self.task_tabs = QTabBar()
+        self.task_tabs.addTab('今日预计完成')
+        self.task_tabs.addTab('已定时任务')
+        self.task_tabs.setExpanding(False)
+        self.task_tabs.setDrawBase(False)
+        self.task_tabs.currentChanged.connect(self.refresh_bottom)
+        ready_top.addWidget(self.task_tabs, 1)
+        self.ready_label = QLabel()
+        self.ready_label.setObjectName('muted')
+        ready_top.addWidget(self.ready_label)
         self.time_filter = QComboBox()
         for title, value in [('全部定时', 'all'), ('今日任务', 'today'), ('已逾期', 'overdue')]:
             self.time_filter.addItem(title, value)
-        self.time_filter.currentIndexChanged.connect(self.refresh_scheduled)
+        self.time_filter.currentIndexChanged.connect(self.refresh_bottom)
         ready_top.addWidget(self.time_filter)
         content.addLayout(ready_top)
         self.ready_list = QListWidget()
@@ -847,7 +872,7 @@ class Window(QMainWindow):
         self.count_label.setText(f'{len(self.forest.data["roots"])} 棵树 · {sum(n["kind"] == "task" for n in self.forest.nodes.values())} 个步骤')
         self.undo_button.setEnabled(bool(self.forest.undo_stack))
         self.view.render_forest()
-        self.refresh_scheduled()
+        self.refresh_bottom()
 
     def select_category(self, current, previous):
         self.selected = current.data(Qt.ItemDataRole.UserRole) if current else None
@@ -858,25 +883,35 @@ class Window(QMainWindow):
         self.view.resetTransform()
         self.view.horizontalScrollBar().setValue(0)
         self.view.verticalScrollBar().setValue(0)
-        self.refresh_scheduled()
+        self.refresh_bottom()
 
-    def refresh_scheduled(self):
+    def refresh_bottom(self):
         scroll = self.ready_list.verticalScrollBar().value()
         self.ready_list.clear()
-        tasks = self.forest.scheduled(self.time_filter.currentData() or 'all')
-        self.ready_label.setText(f'已定时任务  ·  {len(tasks)} 项')
+        scheduled = self.task_tabs.currentIndex() == 1
+        self.time_filter.setVisible(scheduled)
+        tasks = self.forest.scheduled(self.time_filter.currentData() or 'all') if scheduled else self.forest.planned_today()
+        self.ready_label.setText(f'{len(tasks)} 项')
         for root, key in tasks:
             node = self.forest.nodes[key]
             item = QListWidgetItem()
             row = QWidget()
             box = QHBoxLayout(row)
             box.setContentsMargins(10, 4, 6, 4)
+            if node.get('priority'):
+                badge = QLabel('★ 优先')
+                badge.setObjectName('priority')
+                box.addWidget(badge)
             title = QLabel(node['title'])
             title.setToolTip(node['title'])
             title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             box.addWidget(title, 1)
-            meta = QLabel(schedule_text(node))
-            meta.setToolTip(self.forest.nodes[root]['title'] + '\n' + schedule_text(node))
+            details = schedule_text(node)
+            if not scheduled:
+                details = self.forest.today_source(key) + (' · ' + details if details else '')
+            meta = QLabel(details)
+            meta.setMaximumWidth(245)
+            meta.setToolTip(self.forest.nodes[root]['title'] + '\n' + details)
             meta.setObjectName('muted')
             box.addWidget(meta)
             done = button('✓', lambda checked=False, k=key: self.complete(k))
@@ -888,7 +923,7 @@ class Window(QMainWindow):
             self.ready_list.addItem(item)
             self.ready_list.setItemWidget(item, row)
         if not tasks:
-            self.ready_list.addItem('暂无定时任务。右键编辑任一任务，指定开始时间或截止时间。')
+            self.ready_list.addItem('暂无定时任务。编辑任一任务，指定开始或截止时间。' if scheduled else '今日暂无预计任务。编辑节点勾选「建议今日完成」，今日定时任务也会自动列入。')
         self.ready_list.verticalScrollBar().setValue(scroll)
 
     def find_task(self, text):
@@ -1028,7 +1063,8 @@ class Window(QMainWindow):
             '• 单击节点添加后续、前后插入、同层任务或当前步骤的细节。\n'
             '• 细分支是当前步骤的附属细节，不占后续主线；完成母步骤时一并移除。\n'
             '• 拖到中间接为后续；上/下边缘同层重排；左侧类别跨类移动。\n'
-            '• 指定开始/截止时间后进入底部「已定时任务」。\n'
+            '• 底部默认显示今日预计任务，今日定时自动列入，未完成任务自动顺延。\n'
+            '• 勾选「优先」后加星标并在两个列表置顶；可切换查看已定时任务。\n'
             '• 提前 1 小时、10 分钟及到时提醒；开机汇总今日未完成任务。\n'
             '• 所有任务树默认收起步骤；点击小箭头或左侧类别展开。\n'
             '• Ctrl+Z 撤销，Ctrl+Shift+Z 重做；Ctrl+滚轮缩放。\n'
@@ -1083,7 +1119,7 @@ class Window(QMainWindow):
             self.reminders.poll(self.forest, self.notify)
         except OSError as error:
             self.message('提醒记录未保存：' + str(error))
-        self.refresh_scheduled()
+        self.refresh_bottom()
         for card in self.view.cards.values():
             card.update()
 
