@@ -6,3 +6,6 @@ __pycache__/
 build/
 dist/
 .coverage
+
+# Locally compiled Qt input method plugins (specific to Qt ABI / architecture)
+.qt-plugins/

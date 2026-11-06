@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 
 from .model import Forest, InvalidTree
 from . import desktop
+from .input_method import configure_input_method
 
 MIME = 'application/x-task-grove-node'
 GREEN = '#28664f'
@@ -899,6 +900,7 @@ def main():
     parser.add_argument('--background', action='store_true', help='登录启动时收在托盘')
     parser.add_argument('--data-dir', type=Path, help='单独的数据目录（可用于测试）')
     args = parser.parse_args()
+    configure_input_method()
     app = QApplication(sys.argv[:1])
     app.setApplicationName('task-grove')
     app.setOrganizationName('TaskGrove')

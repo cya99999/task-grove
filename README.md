@@ -80,6 +80,25 @@ rm -f ~/.local/share/applications/task-grove.desktop
 
 退出应用后可删除仓库。以上操作保留个人任务数据。
 
+## 搜狗中文输入（Ubuntu / Fcitx 4）
+
+搜狗使用 Fcitx 4；PySide6 的官方 wheel 默认不包含 Fcitx 插件。Ubuntu 的系统插件依赖系统 Qt 私有 ABI，不能直接复制给不同版本的 Qt。本项目在启动前为应用加载 `.qt-plugins/<Qt版本>/platforminputcontexts/` 中匹配的插件；只向 Qt 暴露这个专用目录，避免混入系统平台插件。尊重已有的 `QT_IM_MODULE`，不会修改桌面全局输入法设置。
+
+当前本机已构建并验证 Qt 6.12.0 专用插件：通过真实 X11 键盘事件输入 `zhongwen` 并选词，编辑框得到「中文」。依赖固定为已验证版本；升级 Qt 后需要重新构建。二进制插件和 SDK 不进入 Git，下面是新机器上的重建方法（无需 sudo）：
+
+```bash
+python3 -m venv /tmp/task-grove-buildenv
+/tmp/task-grove-buildenv/bin/python -m pip install aqtinstall
+/tmp/task-grove-buildenv/bin/python -m aqt install-qt linux desktop 6.12.0 linux_gcc_64 --archives qtbase --outputdir /tmp/task-grove-sdk
+mkdir -p /tmp/task-grove-deps
+(cd /tmp/task-grove-deps
+ apt-get download extra-cmake-modules libxkbcommon-dev libgl-dev libglx-dev libopengl-dev libegl-dev libglvnd-core-dev
+ for deb in *.deb; do dpkg-deb -x "$deb" root; done)
+.venv/bin/python scripts/build_fcitx_plugin.py --qt-prefix /tmp/task-grove-sdk/6.12.0/gcc_64 --dev-prefix /tmp/task-grove-deps/root/usr
+```
+
+需要本机已有 CMake、Ninja、G++ 和搜狗/Fcitx。脚本下载固定版本的 [Fcitx 官方插件源码](https://github.com/fcitx/fcitx-qt5/tree/c328b03f32a4276d9aeb3213d1f3f959ef6848f2)，在临时目录编译、验证后安装到应用专用目录，并保留上游许可证。退出并重新打开枝序后生效。插件自身遵守上游许可证，不适用本项目的 MIT 许可证。
+
 ## 开发与测试
 
 ```bash
