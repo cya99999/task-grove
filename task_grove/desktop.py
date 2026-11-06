@@ -13,7 +13,7 @@ def desktop_entry(background=False):
     def quote(value):
         return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$').replace('%', '%%') + '"'
     return ('[Desktop Entry]\nType=Application\nName=枝序 Task Grove\n'
-            'Comment=把下一步放回树上，让空档时间有处可去\n'
+            'Comment=思维导图式任务拆解与管理器\n'
             f'Exec={quote(sys.executable)} -m task_grove.app' + (' --background' if background else '') + '\n'
             f'Path={ROOT}\nIcon={ROOT / "assets/icon.svg"}\n'
             'Terminal=false\nCategories=Office;ProjectManagement;\n'

@@ -11,13 +11,13 @@ from PySide6.QtCore import Qt, QPointF, QMimeData, QDateTime
 from PySide6.QtGui import QDropEvent, QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
-from task_grove.app import Window, STYLE, MIME, TaskDialog
+from task_grove.app import Window, STYLE, MIME, TaskDialog, apply_theme
 from task_grove.model import Forest
 
 APP = QApplication.instance() or QApplication([])
 APP.setOrganizationName('TaskGroveTests')
 APP.setApplicationName('test-v2')
-APP.setStyleSheet(STYLE)
+apply_theme(APP)
 
 
 class GuiTests(unittest.TestCase):

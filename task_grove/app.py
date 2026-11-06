@@ -10,7 +10,7 @@ import time
 
 from PySide6.QtCore import (Qt, QPointF, QRectF, QTimer, QMimeData, QSettings,
                             QLockFile, QStandardPaths, QDateTime)
-from PySide6.QtGui import (QAction, QColor, QPainter, QPen, QBrush, QFont,
+from PySide6.QtGui import (QAction, QColor, QPainter, QPen, QBrush, QFont, QPalette,
                            QPainterPath, QIcon, QPixmap, QDrag, QKeySequence, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -46,8 +46,22 @@ QPushButton#primary { background: #28664f; color: white; border-color: #28664f; 
 QPushButton#primary:hover { background: #34795e; }
 QPushButton#quiet { background: transparent; border: none; color: #64786a; }
 QPushButton:disabled { color: #b1bcb2; background: #f1f3ef; }
-QLineEdit, QComboBox, QSpinBox { background: white; border: 1px solid #dce5db; border-radius: 7px; padding: 7px; }
-QLineEdit:focus { border: 1px solid #79a68d; }
+QLineEdit, QComboBox, QSpinBox, QDateTimeEdit { background: white; border: 1px solid #dce5db; border-radius: 7px; padding: 7px; }
+QLineEdit:focus, QDateTimeEdit:focus { border: 1px solid #79a68d; }
+QDateTimeEdit { color: #253e33; selection-background-color: #28664f; selection-color: white; padding-right: 28px; }
+QDateTimeEdit:disabled { background: #edf1eb; color: #68766c; border-color: #d5dfd2; }
+QDateTimeEdit::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 25px; background: #e7eee2; border-left: 1px solid #cbd9c8; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QDateTimeEdit::drop-down:disabled { background: #e5eae2; border-color: #d5dfd2; }
+QCheckBox { spacing: 7px; background: transparent; }
+QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #829b85; border-radius: 4px; background: white; }
+QCheckBox::indicator:hover { border: 1px solid #28664f; background: #edf5e7; }
+QCheckBox::indicator:checked { background: #28664f; border-color: #28664f; }
+QCheckBox::indicator:checked:hover { background: #34795d; }
+QCheckBox::indicator:disabled { background: #edf1eb; border-color: #cbd5c6; }
+QCalendarWidget QWidget { background: #ffffff; color: #253e33; }
+QCalendarWidget QToolButton { background: #e7eee2; color: #253e33; border: none; border-radius: 4px; padding: 5px; }
+QCalendarWidget QAbstractItemView { background: white; color: #253e33; selection-background-color: #28664f; selection-color: white; alternate-background-color: #f3f6ef; }
+QCalendarWidget QAbstractItemView:disabled { color: #9aa69c; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { padding: 10px 8px; border-radius: 8px; margin: 2px 0px; }
 QListWidget::item:selected { background: #e4eddf; color: #28664f; }
@@ -64,6 +78,38 @@ QScrollBar::handle:horizontal { background: #c7d4c5; border-radius: 4px; min-wid
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QToolTip { background: #253e33; color: white; border: none; padding: 6px; }
 '''
+
+
+STYLE += '\nQCheckBox::indicator:checked { image: url("' + (desktop.ROOT / 'assets/check.svg').as_posix() + '"); }'
+STYLE += '\nQDateTimeEdit::down-arrow { width: 12px; height: 8px; image: url("' + (desktop.ROOT / 'assets/chevron-down.svg').as_posix() + '"); }'
+
+
+def apply_theme(app):
+    """Use one light palette for native, disabled, calendar and custom widgets."""
+    app.setStyle('Fusion')
+    palette = QPalette()
+    colors = {
+        QPalette.ColorRole.Window: '#f7f9f5',
+        QPalette.ColorRole.WindowText: INK,
+        QPalette.ColorRole.Base: '#ffffff',
+        QPalette.ColorRole.AlternateBase: '#edf2e9',
+        QPalette.ColorRole.Text: INK,
+        QPalette.ColorRole.Button: '#edf2e9',
+        QPalette.ColorRole.ButtonText: INK,
+        QPalette.ColorRole.Highlight: GREEN,
+        QPalette.ColorRole.HighlightedText: '#ffffff',
+        QPalette.ColorRole.ToolTipBase: INK,
+        QPalette.ColorRole.ToolTipText: '#ffffff',
+        QPalette.ColorRole.PlaceholderText: '#758679',
+    }
+    for role, value in colors.items():
+        palette.setColor(role, QColor(value))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor('#68766c'))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor('#edf1eb'))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button, QColor('#e5eae2'))
+    app.setPalette(palette)
+    app.setStyleSheet(STYLE)
 
 
 def icon():
@@ -1001,7 +1047,7 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(icon())
     app.setFont(QFont('Noto Sans CJK SC', 10))
-    app.setStyleSheet(STYLE)
+    apply_theme(app)
     folder = args.data_dir or desktop.DATA / 'task-grove'
     try:
         folder.mkdir(parents=True, exist_ok=True)
