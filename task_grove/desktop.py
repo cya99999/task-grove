@@ -35,3 +35,20 @@ def install(autostart=True):
     launcher.chmod(0o755)
     set_autostart(autostart)
     return launcher
+
+
+def launch_preferred_checkout():
+    """Use the user's selected desktop checkout unless isolated local data was requested."""
+    if any(arg == '--local' or arg == '--data-dir' or arg.startswith('--data-dir=') for arg in sys.argv[1:]):
+        return
+    preference = CONFIG / 'task-grove/desktop-checkout'
+    if not preference.exists():
+        return
+    target = Path(preference.read_text().strip()).expanduser().resolve()
+    if target == ROOT.resolve():
+        return
+    python = target / '.venv/bin/python'
+    if not python.is_file() or not (target / 'task_grove/app.py').is_file():
+        raise RuntimeError('配置的桌面版本不存在，请检查 ~/.config/task-grove/desktop-checkout')
+    os.chdir(target)
+    os.execv(str(python), [str(python), '-m', 'task_grove.app', *sys.argv[1:]])

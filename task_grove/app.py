@@ -1176,9 +1176,11 @@ class Window(QMainWindow):
 
 
 def main():
+    desktop.launch_preferred_checkout()
     parser = argparse.ArgumentParser(description='枝序 · 本地桌面任务树')
     parser.add_argument('--background', action='store_true', help='登录启动时收在托盘')
     parser.add_argument('--data-dir', type=Path, help='单独的数据目录（可用于测试）')
+    parser.add_argument('--local', action='store_true', help='忽略首选版本，仅打开本地任务')
     args = parser.parse_args()
     configure_input_method()
     app = QApplication(sys.argv[:1])

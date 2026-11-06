@@ -206,3 +206,8 @@ mkdir -p /tmp/task-grove-deps
 使用 [Qt Graphics View](https://doc.qt.io/qtforpython-6/overviews/qtwidgets-graphicsview.html) 绘制树，通过 [QSystemTrayIcon](https://doc.qt.io/qt-6/qsystemtrayicon.html) 集成托盘。Linux 通知优先使用 `notify-send`，没有时回退到 Qt 托盘通知。
 
 MIT License。Qt / PySide6、Fcitx 插件遵守各自许可证。
+
+
+### 选择常用桌面版本
+
+若本机保留多个版本，可在 `~/.config/task-grove/desktop-checkout` 写入常用版本的仓库绝对路径（只写路径，不加引号）。从任一版本运行 `./run.sh` 或 `python -m task_grove.app`，都会转入这个版本。目标需已安装 `.venv`。删除该文件可恢复各版本独立启动；`./run.sh --local` 或 `--data-dir /路径` 可临时打开独立本地空间。不同数据目录不会自动合并。
