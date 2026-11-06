@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QPointF, QMimeData, QDateTime
 from PySide6.QtGui import QDropEvent, QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
-from task_grove.app import Window, STYLE, MIME, TaskDialog, apply_theme
+from task_grove.app import Window, STYLE, MIME, TaskDialog, FineBranchesDialog, apply_theme
 from task_grove.model import Forest
 
 APP = QApplication.instance() or QApplication([])
@@ -147,6 +147,50 @@ class GuiTests(unittest.TestCase):
     def test_inbox_edit_dialog_cannot_rename_or_delete_root(self):
         dialog = TaskDialog(self.window, '编辑', self.forest.nodes[self.forest.inbox], category=True, inbox=True)
         self.assertTrue(dialog.name.isReadOnly())
+
+    def test_fine_branch_text_selects_and_checkbox_completes(self):
+        key = self.forest.add_lines('read', ['检查资料'])[0]
+        self.window.refresh()
+        self.click_card(key, 70, 16)
+        self.assertIn(key, self.forest.nodes)
+        self.assertTrue(self.window.view.cards[key].line)
+        self.click_card(key, 22, 17)
+        self.assertNotIn(key, self.forest.nodes)
+
+    def test_batch_dialog_adds_parallel_lines_to_selected_mother(self):
+        def accept(dialog):
+            dialog.tasks.setPlainText('准备数据\n检查输出\n记录结果')
+            return QDialog.DialogCode.Accepted
+        with patch.object(FineBranchesDialog, 'exec', accept):
+            self.window.add_fine_branches('read')
+        APP.processEvents()
+        children = self.forest.nodes['read']['children']
+        added = children[1:]  # Existing note is retained.
+        self.assertEqual([self.forest.nodes[key]['title'] for key in added], ['准备数据', '检查输出', '记录结果'])
+        self.assertTrue(all(self.window.view.cards[key].line for key in added))
+        self.assertEqual(self.window.selected, 'learn')
+        self.forest.undo()
+        self.assertEqual(self.forest.nodes['read']['children'], ['note'])
+
+    def test_line_can_be_edited_as_a_card_and_dragged_to_a_category(self):
+        key = self.forest.add_lines('read', ['检查资料'])[0]
+        dialog = TaskDialog(self.window, '编辑', self.forest.nodes[key])
+        self.assertEqual(dialog.values()['presentation'], 'line')
+        dialog.presentation.setCurrentIndex(0)
+        self.assertEqual(dialog.values()['presentation'], 'card')
+        self.window.locate(key)
+        self.window.selected = None
+        self.window.refresh()
+        view = self.window.view
+        mime = QMimeData()
+        mime.setData(MIME, key.encode())
+        root = view.cards['life']
+        pos = view.mapFromScene(root.pos() + QPointF(80, 40))
+        drop = QDropEvent(QPointF(pos), Qt.DropAction.MoveAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        view.dropEvent(drop)
+        APP.processEvents()
+        self.assertTrue(drop.isAccepted())
+        self.assertEqual(self.forest.parent(key), 'life')
 
 
 if __name__ == '__main__':

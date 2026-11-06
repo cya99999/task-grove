@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsObject, QMenu,
     QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QMessageBox,
     QFileDialog, QSystemTrayIcon, QFrame, QAbstractItemView, QSizePolicy,
-    QCheckBox, QDateTimeEdit)
+    QCheckBox, QDateTimeEdit, QPlainTextEdit)
 
 from .model import Forest, InvalidTree
 from . import desktop
@@ -31,6 +31,7 @@ INK = '#253e33'
 MUTED = '#7c8c82'
 CARD_W, CARD_H = 210, 82
 COL, ROW = 278, 112
+LINE_H, LINE_ROW = 64, 82
 
 STYLE = '''
 QMainWindow, QDialog { background: #f7f9f5; color: #253e33; }
@@ -165,6 +166,11 @@ class TaskDialog(QDialog):
         self.time_inputs = {}
         self.time_dirty = set()
         if not category:
+            self.presentation = QComboBox()
+            self.presentation.addItem('任务卡片', 'card')
+            self.presentation.addItem('细分支（文字与横线）', 'line')
+            self.presentation.setCurrentIndex(1 if self.original.get('presentation') == 'line' else 0)
+            form.addRow('显示形式', self.presentation)
             form.addRow('预计用时', self.minutes)
             for field, label in (('start_at', '开始时间'), ('due_at', '截止时间')):
                 row = QWidget()
@@ -232,9 +238,63 @@ class TaskDialog(QDialog):
 
     def values(self):
         values = dict(title=self.name.text().strip(), minutes=self.minutes.value())
+        if not self.category:
+            values['presentation'] = self.presentation.currentData()
         for field, (check, editor) in self.time_inputs.items():
             values[field] = (editor.dateTime().toSecsSinceEpoch() if field in self.time_dirty else self.original.get(field, 0)) if check.isChecked() else 0
         return values
+
+
+class FineBranchesDialog(QDialog):
+    def __init__(self, parent, title):
+        self.input_mode = capture_input_mode()
+        super().__init__(parent)
+        self.setWindowTitle('添加并列细分支')
+        self.setMinimumWidth(430)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        hint = QLabel(f'挂在「{title}」下，每行一个小任务。')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.tasks = QPlainTextEdit()
+        self.tasks.setPlaceholderText('准备测试数据\n检查输入输出\n记录测试结果')
+        self.tasks.setMinimumHeight(170)
+        self.tasks.setStyleSheet('QPlainTextEdit { background: white; border: 1px solid #dce5db; border-radius: 8px; padding: 8px; }')
+        layout.addWidget(self.tasks)
+        hint = QLabel('用文字和横线显示，横线左端连接母节点；可勾选、拖动和右键编辑。')
+        hint.setObjectName('muted')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        actions.button(QDialogButtonBox.StandardButton.Ok).setText('添加细分支')
+        actions.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        actions.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+        self.tasks.textChanged.connect(lambda: actions.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(self.titles())))
+        actions.accepted.connect(self.accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+        self.tasks.setFocus()
+
+    def titles(self):
+        return [line.strip() for line in self.tasks.toPlainText().splitlines() if line.strip()]
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        restore_input_mode(self.input_mode, self)
+
+    def done(self, result):
+        mode = capture_input_mode()
+        parent = self.parentWidget()
+        super().done(result)
+        if parent is not None:
+            restore_input_mode(mode, parent)
+
+    def accept(self):
+        if any(len(title) > 200 for title in self.titles()):
+            QMessageBox.warning(self, '名称太长', '每个细分支名称最多 200 个字符。')
+        elif self.titles():
+            super().accept()
 
 
 class Card(QGraphicsObject):
@@ -243,6 +303,9 @@ class Card(QGraphicsObject):
         self.window, self.key = window, key
         self.node = window.forest.nodes[key]
         self.root = self.node['kind'] == 'category'
+        self.line = self.node.get('presentation') == 'line' and not self.root
+        self.height = LINE_H if self.line else CARD_H
+        self.anchor_y = 40 if self.line else CARD_H / 2
         self.hover = False
         self.pressed = None
         self.moved = False
@@ -252,7 +315,7 @@ class Card(QGraphicsObject):
             '左键选中并拖动 · 勾选完成 · 右键直接编辑\n' + schedule_text(self.node)))
 
     def boundingRect(self):
-        return QRectF(-3, -3, CARD_W + 6, CARD_H + 6)
+        return QRectF(-3, -3, CARD_W + 6, self.height + 6)
 
     def paint(self, p, option, widget=None):
         if self.key not in self.window.forest.nodes:
@@ -266,7 +329,12 @@ class Card(QGraphicsObject):
             border = '#e2a43d'
         p.setPen(QPen(QColor(border), 2 if self.hover or matched or self.key == self.window.selected_node else 1))
         p.setBrush(QColor(fill))
-        p.drawRoundedRect(QRectF(0, 0, CARD_W, CARD_H), 13, 13)
+        if self.line:
+            line_color = '#d6a043' if matched else GREEN if self.hover or self.key == self.window.selected_node else '#a2b99b'
+            p.setPen(QPen(QColor(line_color), 2 if self.hover or self.key == self.window.selected_node or matched else 1.3))
+            p.drawLine(QPointF(0, self.anchor_y), QPointF(CARD_W, self.anchor_y))
+        else:
+            p.drawRoundedRect(QRectF(0, 0, CARD_W, CARD_H), 13, 13)
         color = '#ffffff' if self.root else INK
         p.setPen(QColor(color))
         font = QFont(self.window.font())
@@ -279,9 +347,9 @@ class Card(QGraphicsObject):
         if not self.root:
             p.setBrush(QColor('#ffffff'))
             p.setPen(QPen(QColor('#7b9e83'), 1.4))
-            p.drawRoundedRect(QRectF(13, 23, 18, 18), 4, 4)
+            p.drawRoundedRect(QRectF(13, 10 if self.line else 23, 18, 18), 4, 4)
             if self.hover:
-                p.drawText(QRectF(13, 20, 18, 22), Qt.AlignmentFlag.AlignCenter, '✓')
+                p.drawText(QRectF(13, 7 if self.line else 20, 18, 22), Qt.AlignmentFlag.AlignCenter, '✓')
             p.setPen(QColor(color))
         # Two lines, with a tooltip for the full title.
         metrics = p.fontMetrics()
@@ -297,26 +365,26 @@ class Card(QGraphicsObject):
         if len(lines) > 2:
             lines = lines[:2]
             lines[1] = metrics.elidedText(lines[1] + '…', Qt.TextElideMode.ElideRight, text_width)
-        p.drawText(QRectF(text_x, 10, text_width, 40), Qt.AlignmentFlag.AlignVCenter, '\n'.join(lines))
+        p.drawText(QRectF(text_x, 0 if self.line else 10, text_width, 36 if self.line else 40), Qt.AlignmentFlag.AlignVCenter, '\n'.join(lines))
         p.setFont(QFont(self.window.font().family(), 9))
         if self.root:
             meta = f'{len(self.window.forest.descendants(self.key))} 个步骤'
             p.setPen(QColor('#c5dec7'))
         else:
             minutes = self.node.get('minutes', 0)
-            meta = f'{minutes} 分钟' if minutes else '未估时'
+            meta = f'{minutes} 分钟' if minutes else '' if self.line else '未估时'
             if self.node.get('due_at'):
                 meta = '截止 ' + QDateTime.fromSecsSinceEpoch(int(self.node['due_at'])).toString('MM-dd HH:mm')
             elif self.node.get('start_at'):
                 meta = '开始 ' + QDateTime.fromSecsSinceEpoch(int(self.node['start_at'])).toString('MM-dd HH:mm')
             p.setPen(QColor(MUTED))
-        p.drawText(QRectF(14, 57, 178, 17), Qt.AlignmentFlag.AlignLeft, meta)
+        p.drawText(QRectF(14, 44 if self.line else 57, 158 if self.line else 178, 17), Qt.AlignmentFlag.AlignLeft, meta)
         p.setPen(QColor('#d7ead2' if self.root else '#6c9477'))
         p.setFont(QFont(self.window.font().family(), 19))
-        p.drawText(QRectF(173, 12, 29, 30), Qt.AlignmentFlag.AlignCenter, '+')
+        p.drawText(QRectF(173, 1 if self.line else 12, 29, 30), Qt.AlignmentFlag.AlignCenter, '+')
         if self.node['children']:
             p.setFont(QFont(self.window.font().family(), 10))
-            p.drawText(QRectF(175, 49, 28, 25), Qt.AlignmentFlag.AlignCenter,
+            p.drawText(QRectF(175, 39 if self.line else 49, 28, 25), Qt.AlignmentFlag.AlignCenter,
                        '▸' if self.window.is_collapsed(self.key) else '▾')
 
     def hoverEnterEvent(self, event):
@@ -347,7 +415,7 @@ class Card(QGraphicsObject):
         mime = QMimeData()
         mime.setData(MIME, self.key.encode())
         drag.setMimeData(mime)
-        pix = QPixmap(CARD_W + 6, CARD_H + 6)
+        pix = QPixmap(CARD_W + 6, self.height + 6)
         pix.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pix)
         painter.translate(3, 3)
@@ -363,11 +431,11 @@ class Card(QGraphicsObject):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.pressed is not None and not self.moved:
             pos = event.pos()
-            if pos.x() >= 170 and pos.y() < 49:
+            if pos.x() >= 170 and pos.y() < (39 if self.line else 49):
                 self.window.add_menu(self.key, event.screenPos())
             elif pos.x() >= 170 and self.node['children']:
                 self.window.toggle_branch(self.key)
-            elif not self.root and QRectF(10, 19, 25, 27).contains(pos):
+            elif not self.root and QRectF(10, 6 if self.line else 19, 25, 27).contains(pos):
                 self.window.complete(self.key)
         self.pressed = None
         event.accept()
@@ -414,22 +482,23 @@ class ForestView(QGraphicsView):
 
         def height(key):
             n = model.nodes[key]
+            row = LINE_ROW if n.get('presentation') == 'line' else ROW
             if not n['children'] or self.window.is_collapsed(key):
-                return ROW
-            return max(ROW, sum(height(child) for child in n['children']))
+                return row
+            return max(row, sum(height(child) for child in n['children']))
 
         def draw(key, depth, top):
             h = height(key)
             card = Card(self.window, key)
-            card.setPos(28 + depth * COL, top + (h - CARD_H) / 2)
+            card.setPos(28 + depth * COL, top + h / 2 - card.anchor_y)
             self.scene().addItem(card)
             self.cards[key] = card
             child_top = top
             if not self.window.is_collapsed(key):
                 for child in model.nodes[key]['children']:
                     other = draw(child, depth + 1, child_top)
-                    start = card.pos() + QPointF(CARD_W, CARD_H / 2)
-                    end = other.pos() + QPointF(0, CARD_H / 2)
+                    start = card.pos() + QPointF(CARD_W, card.anchor_y)
+                    end = other.pos() + QPointF(0, other.anchor_y)
                     path = QPainterPath(start)
                     path.cubicTo(start + QPointF(35, 0), end - QPointF(35, 0), end)
                     edge = self.scene().addPath(path, QPen(QColor('#c0d1ba'), 2))
@@ -452,7 +521,7 @@ class ForestView(QGraphicsView):
     def contextMenuEvent(self, event):
         position = self.mapToScene(event.pos())
         for key, card in self.cards.items():
-            if QRectF(0, 0, CARD_W, CARD_H).contains(card.mapFromScene(position)):
+            if QRectF(0, 0, CARD_W, card.height).contains(card.mapFromScene(position)):
                 self.window.edit_task(key)
                 event.accept()
                 return
@@ -472,8 +541,8 @@ class ForestView(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
         for target, card in self.cards.items():
             local = card.mapFromScene(scene_pos)
-            if QRectF(0, 0, CARD_W, CARD_H).contains(local):
-                mode = 'child' if card.root else ('before' if local.y() < 20 else 'after' if local.y() > CARD_H - 20 else 'child')
+            if QRectF(0, 0, CARD_W, card.height).contains(local):
+                mode = 'child' if card.root else ('before' if local.y() < card.height * .24 else 'after' if local.y() > card.height * .76 else 'child')
                 if self.window.forest.can_move(key, target, mode):
                     return key, target, mode
         return None
@@ -491,10 +560,10 @@ class ForestView(QGraphicsView):
             key, dest, mode = target
             card = self.cards[dest]
             if mode == 'child':
-                rect = QRectF(card.x() - 3, card.y() - 3, CARD_W + 6, CARD_H + 6)
+                rect = QRectF(card.x() - 3, card.y() - 3, CARD_W + 6, card.height + 6)
                 self.drop_hint = self.scene().addRect(rect, QPen(QColor('#5f9e75'), 3), QBrush(QColor(90, 160, 110, 35)))
             else:
-                y = card.y() - 5 if mode == 'before' else card.y() + CARD_H + 5
+                y = card.y() - 5 if mode == 'before' else card.y() + card.height + 5
                 self.drop_hint = self.scene().addLine(card.x(), y, card.x() + CARD_W, y, QPen(QColor('#5f9e75'), 4))
             self.drop_hint.setZValue(5)
             self.drop_target = target
@@ -860,11 +929,25 @@ class Window(QMainWindow):
         input_mode = capture_input_mode()
         menu = QMenu(self)
         menu.addAction('＋ 添加后续分支', lambda: self.add_task(key, input_mode=input_mode))
+        menu.addAction('☷ 添加细分支（每行一项）', lambda: self.add_fine_branches(key, input_mode))
         if self.forest.nodes[key]['kind'] == 'task':
             menu.addAction('↑ 在此前插入一步', lambda: self.add_task(key, 'before', input_mode))
             menu.addAction('↓ 在此后插入一步', lambda: self.add_task(key, 'after', input_mode))
             menu.addAction('⑂ 添加同层并行任务', lambda: self.add_task(key, 'sibling', input_mode))
         menu.exec(pos)
+
+    def add_fine_branches(self, target, input_mode=None):
+        if target not in self.forest.nodes:
+            return
+        dialog = FineBranchesDialog(self, self.forest.nodes[target]['title'])
+        if input_mode is not None:
+            dialog.input_mode = input_mode
+        if dialog.exec():
+            titles = dialog.titles()
+            keys = self.perform(lambda: self.forest.add_lines(target, titles), f'已添加 {len(titles)} 个并列细分支 · Ctrl+Z 一次撤销')
+            if keys:
+                self.selected = self.forest.category(keys[0])
+                self.selected_node = keys[0]
 
     def complete(self, key):
         if key not in self.forest.nodes:
@@ -922,7 +1005,8 @@ class Window(QMainWindow):
             '一类工作是一棵树，步骤可以跳着做。零散任务是常驻收纳树。\n\n'
             '• 左键选择并拖动节点，勾选方框完成；后续分支自动接上。\n'
             '• 右键直接打开编辑页，可以改名、定时、完成或删除。\n'
-            '• 点击 ＋ 添加后续、在前后插入或添加同层任务。\n'
+            '• 点击 ＋ 添加后续、前后插入、同层任务或每行一个的并列细分支。\n'
+            '• 细分支只显示文字和横线，仍可勾选、拖动、编辑和定时。\n'
             '• 拖到中间接为后续；上/下边缘同层重排；左侧类别跨类移动。\n'
             '• 指定开始/截止时间后进入底部「已定时任务」。\n'
             '• 提前 1 小时、10 分钟及到时提醒；开机汇总今日未完成任务。\n'

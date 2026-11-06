@@ -49,6 +49,8 @@ def validate(data):
             raise InvalidTree('节点格式错误')
         if n.get('kind') != ('category' if depth == 0 else 'task'):
             raise InvalidTree('分类只能位于树根')
+        if n.get('presentation', 'card') not in ('card', 'line') or (depth == 0 and n.get('presentation', 'card') != 'card'):
+            raise InvalidTree('分类使用树干卡片；任务可显示为卡片或细分支')
         if not isinstance(n.get('title'), str) or not n['title'].strip() or len(n['title']) > 200:
             raise InvalidTree('任务名称应为 1–200 个字符')
         if not isinstance(n.get('children'), list):
@@ -182,7 +184,7 @@ class Forest:
             pending.extend(nodes[item]['children'])
         return result
 
-    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0):
+    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card'):
         title = title.strip()
         if not title:
             raise InvalidTree('请填写任务名称')
@@ -193,7 +195,7 @@ class Forest:
         def action(data):
             nodes = data['nodes']
             node = dict(title=title, kind='task' if target else 'category', children=[],
-                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False)
+                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation)
             if target is None:
                 data['roots'].append(key)
             elif mode == 'child':
@@ -221,8 +223,26 @@ class Forest:
             return key
         return self.change(action)
 
+    def add_lines(self, target, titles):
+        """Append parallel lightweight tasks as one atomic, undoable operation."""
+        if not isinstance(titles, list) or not titles or not all(isinstance(title, str) for title in titles):
+            raise InvalidTree('请每行填写一个细分支任务')
+        titles = [title.strip() for title in titles]
+        if any(not title or len(title) > 200 for title in titles):
+            raise InvalidTree('每个细分支名称应为 1–200 个字符')
+        keys = [uuid.uuid4().hex for _ in titles]
+        def action(data):
+            parent = data['nodes'][target]
+            for key, title in zip(keys, titles):
+                data['nodes'][key] = dict(title=title, kind='task', children=[], minutes=0,
+                                         start_at=0, due_at=0, collapsed=False, presentation='line')
+            parent['children'].extend(keys)
+            parent['collapsed'] = False
+            return keys
+        return self.change(action)
+
     def edit(self, key, **values):
-        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed'}
+        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed', 'presentation'}
         if key == self.inbox and values.get('title', INBOX_TITLE) != INBOX_TITLE:
             raise InvalidTree('零散任务是常驻分类，不能重命名')
         if set(values) - allowed:

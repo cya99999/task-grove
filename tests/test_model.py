@@ -178,6 +178,44 @@ class ForestTests(unittest.TestCase):
             with self.assertRaises(InvalidTree):
                 validate(data)
 
+    def test_parallel_lines_are_one_atomic_undoable_change(self):
+        before = copy.deepcopy(self.f.data)
+        keys = self.f.add_lines(self.a, ['准备数据', '检查输出', '记录结果'])
+        self.assertEqual(self.f.nodes[self.a]['children'], [self.b, self.c] + keys)
+        for key in keys:
+            self.assertEqual(self.f.parent(key), self.a)
+            self.assertEqual(self.f.nodes[key]['presentation'], 'line')
+        after = copy.deepcopy(self.f.data)
+        self.f.undo()
+        self.assertEqual(self.f.data, before)
+        self.f.redo()
+        self.assertEqual(Forest(self.path).data, after)
+
+    def test_invalid_line_batch_does_not_partially_add_tasks(self):
+        before = self.path.read_bytes()
+        for titles in ([], ['有效', 'x' * 201], ['有效', ' '], ['有效', None]):
+            with self.assertRaises(InvalidTree):
+                self.f.add_lines(self.a, titles)
+            self.assertEqual(self.path.read_bytes(), before)
+
+    def test_lines_survive_parent_completion_and_cross_category_move(self):
+        keys = self.f.add_lines(self.a, ['子任务一', '子任务二'])
+        self.f.complete(self.a)
+        self.assertEqual(self.f.parent(keys[0]), self.r)
+        other = self.f.add('其他类别')
+        self.f.move(keys[0], other)
+        self.assertEqual(self.f.parent(keys[0]), other)
+        self.assertEqual(self.f.nodes[keys[0]]['presentation'], 'line')
+        self.f.edit(keys[0], due_at=500, presentation='card')
+        self.assertIn((other, keys[0]), self.f.scheduled())
+        self.assertEqual(self.f.nodes[keys[0]]['presentation'], 'card')
+
+    def test_category_cannot_become_a_line(self):
+        with self.assertRaises(InvalidTree):
+            self.f.edit(self.r, presentation='line')
+        with self.assertRaises(InvalidTree):
+            self.f.add('新类别', presentation='line')
+
 
 if __name__ == '__main__':
     unittest.main()
