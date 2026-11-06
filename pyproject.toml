@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "task-grove"
+version = "1.0.0"
+description = "枝序：支持托盘常驻、可拖拽任务树与空档推荐的本地桌面任务管理器"
+requires-python = ">=3.10"
+dependencies = ["PySide6-Essentials>=6.8,<7"]
+license = "MIT"
+
+[project.scripts]
+task-grove = "task_grove.app:main"
+
+[tool.setuptools.packages.find]
+include = ["task_grove*"]
