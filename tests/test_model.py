@@ -181,7 +181,8 @@ class ForestTests(unittest.TestCase):
     def test_parallel_lines_are_one_atomic_undoable_change(self):
         before = copy.deepcopy(self.f.data)
         keys = self.f.add_lines(self.a, ['准备数据', '检查输出', '记录结果'])
-        self.assertEqual(self.f.nodes[self.a]['children'], [self.b, self.c] + keys)
+        self.assertEqual(self.f.nodes[self.a]['children'], [self.b, self.c])
+        self.assertEqual(self.f.nodes[self.a]['details'], keys)
         for key in keys:
             self.assertEqual(self.f.parent(key), self.a)
             self.assertEqual(self.f.nodes[key]['presentation'], 'line')
@@ -198,17 +199,36 @@ class ForestTests(unittest.TestCase):
                 self.f.add_lines(self.a, titles)
             self.assertEqual(self.path.read_bytes(), before)
 
-    def test_lines_survive_parent_completion_and_cross_category_move(self):
-        keys = self.f.add_lines(self.a, ['子任务一', '子任务二'])
-        self.f.complete(self.a)
-        self.assertEqual(self.f.parent(keys[0]), self.r)
+    def test_details_stay_with_owner_and_do_not_become_following_steps(self):
+        keys = self.f.add_lines(self.a, ['当前步骤细节一', '当前步骤细节二'])
         other = self.f.add('其他类别')
         self.f.move(keys[0], other)
-        self.assertEqual(self.f.parent(keys[0]), other)
-        self.assertEqual(self.f.nodes[keys[0]]['presentation'], 'line')
+        self.assertEqual(self.f.nodes[other]['details'], [keys[0]])
+        self.f.complete(self.a)
+        self.assertEqual(self.f.nodes[self.r]['children'], [self.b, self.c])
+        self.assertNotIn(keys[1], self.f.nodes)
+        self.assertIn(keys[0], self.f.nodes)
         self.f.edit(keys[0], due_at=500, presentation='card')
         self.assertIn((other, keys[0]), self.f.scheduled())
-        self.assertEqual(self.f.nodes[keys[0]]['presentation'], 'card')
+        self.assertEqual(self.f.nodes[other]['children'], [keys[0]])
+        self.assertEqual(self.f.nodes[other]['details'], [])
+
+    def test_old_line_children_migrate_to_attached_details(self):
+        old = copy.deepcopy(self.f.data)
+        old['nodes'][self.b]['presentation'] = 'line'
+        self.path.write_text(json.dumps(old))
+        loaded = Forest(self.path)
+        self.assertEqual(loaded.nodes[self.a]['children'], [self.c])
+        self.assertEqual(loaded.nodes[self.a]['details'], [self.b])
+        self.assertEqual(json.loads(self.path.with_suffix('.json.bak').read_text()), old)
+
+    def test_detail_descendants_participate_in_cycle_protection_and_delete(self):
+        detail = self.f.add_lines(self.a, ['细节'])[0]
+        nested = self.f.add_lines(detail, ['更细的说明'])[0]
+        self.assertFalse(self.f.can_move(self.a, nested, 'child'))
+        self.f.delete_branch(self.a)
+        self.assertNotIn(detail, self.f.nodes)
+        self.assertNotIn(nested, self.f.nodes)
 
     def test_category_cannot_become_a_line(self):
         with self.assertRaises(InvalidTree):

@@ -41,13 +41,16 @@ class GuiTests(unittest.TestCase):
         self.window.locate(key)
         card = self.window.view.cards[key]
         pos = self.window.view.mapFromScene(card.pos() + QPointF(x, y))
-        QTest.mouseClick(self.window.view.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        with patch.object(self.window, 'add_menu') as menu:
+            QTest.mouseClick(self.window.view.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+            self.last_menu_calls = menu.call_args_list
         APP.processEvents()
 
     def test_text_selects_and_checkbox_completes_with_undo(self):
         self.click_card('read', 70, 30)
         self.assertIn('read', self.forest.nodes)
         self.assertEqual(self.window.selected_node, 'read')
+        self.assertEqual(self.last_menu_calls[0].args[0], 'read')
         self.click_card('read', 22, 30)
         self.assertNotIn('read', self.forest.nodes)
         self.assertIn('note', self.forest.nodes['learn']['children'])
@@ -164,8 +167,8 @@ class GuiTests(unittest.TestCase):
         with patch.object(FineBranchesDialog, 'exec', accept):
             self.window.add_fine_branches('read')
         APP.processEvents()
-        children = self.forest.nodes['read']['children']
-        added = children[1:]  # Existing note is retained.
+        self.assertEqual(self.forest.nodes['read']['children'], ['note'])
+        added = self.forest.nodes['read']['details']
         self.assertEqual([self.forest.nodes[key]['title'] for key in added], ['准备数据', '检查输出', '记录结果'])
         self.assertTrue(all(self.window.view.cards[key].line for key in added))
         self.assertEqual(self.window.selected, 'learn')
@@ -191,6 +194,16 @@ class GuiTests(unittest.TestCase):
         APP.processEvents()
         self.assertTrue(drop.isAccepted())
         self.assertEqual(self.forest.parent(key), 'life')
+
+    def test_details_draw_next_to_owner_while_following_step_stays_on_main_line(self):
+        key = self.forest.add_lines('read', ['当前步骤细节'])[0]
+        self.window.locate(key)
+        owner = self.window.view.cards['read']
+        detail = self.window.view.cards[key]
+        following = self.window.view.cards['note']
+        self.assertGreater(detail.y(), owner.y() + owner.height)
+        self.assertLess(detail.x(), following.x())
+        self.assertAlmostEqual(owner.y()+owner.anchor_y, following.y()+following.anchor_y)
 
 
 if __name__ == '__main__':

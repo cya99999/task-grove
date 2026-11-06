@@ -25,6 +25,12 @@ def normalize(data):
         if node.get('wait_until', 0) and not node.get('start_at', 0):
             node['start_at'] = node['wait_until']
         node.pop('wait_until', None)
+        original_children = node['children']
+        original_details = node.get('details', [])
+        node['children'] = [key for key in original_children if data['nodes'][key].get('presentation') != 'line'] + [key for key in original_details if data['nodes'][key].get('presentation') != 'line']
+        details = [key for key in original_details if data['nodes'][key].get('presentation') == 'line'] + [key for key in original_children if data['nodes'][key].get('presentation') == 'line']
+        if details or 'details' in node:
+            node['details'] = details
     return data
 
 
@@ -69,7 +75,9 @@ def validate(data):
             raise InvalidTree('截止时间不能早于开始时间')
         if type(n.get('collapsed', False)) is not bool:
             raise InvalidTree('折叠状态格式错误')
-        for child in n['children']:
+        if not isinstance(n.get('details', []), list):
+            raise InvalidTree('细节列表格式错误')
+        for child in n['children'] + n.get('details', []):
             visit(child, depth + 1)
 
     for root in roots:
@@ -166,9 +174,14 @@ class Forest:
 
     def parent(self, key, data=None):
         for parent, node in (data or self.data)['nodes'].items():
-            if key in node['children']:
+            if key in node['children'] or key in node.get('details', []):
                 return parent
         return None
+
+    def relation(self, key, data=None):
+        data = data or self.data
+        parent = self.parent(key, data)
+        return 'details' if parent is not None and key in data['nodes'][parent].get('details', []) else 'children'
 
     def category(self, key):
         while self.parent(key) is not None:
@@ -177,11 +190,11 @@ class Forest:
 
     def descendants(self, key, data=None):
         nodes = (data or self.data)['nodes']
-        result, pending = [], list(nodes[key]['children'])
+        result, pending = [], list(nodes[key]['children']) + list(nodes[key].get('details', []))
         while pending:
             item = pending.pop(0)
             result.append(item)
-            pending.extend(nodes[item]['children'])
+            pending.extend(nodes[item]['children'] + nodes[item].get('details', []))
         return result
 
     def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card'):
@@ -198,6 +211,14 @@ class Forest:
                         minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation)
             if target is None:
                 data['roots'].append(key)
+            elif presentation == 'line':
+                nodes[target].setdefault('details', []).append(key)
+                nodes[target]['collapsed'] = False
+            elif self.relation(target, data) == 'details' and mode in ('before', 'after', 'sibling'):
+                owner = self.parent(target, data)
+                siblings = nodes[owner]['details']
+                siblings.insert(siblings.index(target) + (mode != 'before'), key)
+                node['presentation'] = 'line'
             elif mode == 'child':
                 nodes[target]['children'].append(key)
                 nodes[target]['collapsed'] = False
@@ -236,7 +257,7 @@ class Forest:
             for key, title in zip(keys, titles):
                 data['nodes'][key] = dict(title=title, kind='task', children=[], minutes=0,
                                          start_at=0, due_at=0, collapsed=False, presentation='line')
-            parent['children'].extend(keys)
+            parent.setdefault('details', []).extend(keys)
             parent['collapsed'] = False
             return keys
         return self.change(action)
@@ -255,9 +276,14 @@ class Forest:
             parent = self.parent(key, data)
             if parent is None:
                 raise InvalidTree('分类不能标记完成')
-            siblings = data['nodes'][parent]['children']
+            siblings = data['nodes'][parent][self.relation(key, data)]
             index = siblings.index(key)
             siblings[index:index + 1] = node['children']
+            attached = []
+            for detail in node.get('details', []):
+                attached.extend([detail] + self.descendants(detail, data))
+            for detail in attached:
+                del data['nodes'][detail]
             del data['nodes'][key]
         self.change(action)
 
@@ -266,7 +292,7 @@ class Forest:
             raise InvalidTree('零散任务是常驻分类，可删除其中的任务，不能删除树干')
         def action(data):
             parent = self.parent(key, data)
-            siblings = data['roots'] if parent is None else data['nodes'][parent]['children']
+            siblings = data['roots'] if parent is None else data['nodes'][parent][self.relation(key, data)]
             siblings.remove(key)
             for item in [key] + self.descendants(key, data):
                 del data['nodes'][item]
@@ -285,13 +311,16 @@ class Forest:
 
         def action(data):
             nodes = data['nodes']
-            nodes[self.parent(key, data)]['children'].remove(key)
+            nodes[self.parent(key, data)][self.relation(key, data)].remove(key)
             if mode == 'child':
-                nodes[target]['children'].append(key)
+                relation = 'details' if nodes[key].get('presentation') == 'line' else 'children'
+                nodes[target].setdefault(relation, []).append(key)
                 nodes[target]['collapsed'] = False
             else:
-                siblings = nodes[self.parent(target, data)]['children']
+                relation = self.relation(target, data)
+                siblings = nodes[self.parent(target, data)][relation]
                 siblings.insert(siblings.index(target) + (mode == 'after'), key)
+                nodes[key]['presentation'] = 'line' if relation == 'details' else 'card'
         self.change(action)
 
     def scheduled(self, scope='all', now=None):
