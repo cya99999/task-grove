@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import json
 import math
 import os
@@ -9,6 +10,22 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
+
+
+INBOX_TITLE = '零散任务'
+
+
+def normalize(data):
+    """Upgrade optional fields without dropping any existing tasks."""
+    if not any(data['nodes'][key]['title'] == INBOX_TITLE for key in data['roots']):
+        key = '__inbox__' if '__inbox__' not in data['nodes'] else uuid.uuid4().hex
+        data['nodes'][key] = dict(kind='category', title=INBOX_TITLE, children=[], minutes=0, collapsed=False)
+        data['roots'].insert(0, key)
+    for node in data['nodes'].values():
+        if node.get('wait_until', 0) and not node.get('start_at', 0):
+            node['start_at'] = node['wait_until']
+        node.pop('wait_until', None)
+    return data
 
 
 class InvalidTree(ValueError):
@@ -42,6 +59,12 @@ def validate(data):
             raise InvalidTree('预计时间应为 0–1440 分钟')
         if type(waiting) not in (float, int) or not math.isfinite(waiting) or waiting < 0:
             raise InvalidTree('等待时间格式错误')
+        for field in ('start_at', 'due_at'):
+            stamp = n.get(field, 0)
+            if type(stamp) not in (int, float) or not math.isfinite(stamp) or not 0 <= stamp <= 253402300799:
+                raise InvalidTree('开始或截止时间格式错误')
+        if n.get('start_at', 0) and n.get('due_at', 0) and n['due_at'] < n['start_at']:
+            raise InvalidTree('截止时间不能早于开始时间')
         if type(n.get('collapsed', False)) is not bool:
             raise InvalidTree('折叠状态格式错误')
         for child in n['children']:
@@ -93,9 +116,18 @@ class Forest:
                 atomic_write(self.path, self.encode(self.data))
                 self.recovery = f'已从备份恢复，损坏文件保存在 {damaged}'
 
+        candidate = normalize(copy.deepcopy(self.data))
+        if candidate != self.data or not self.path.exists():
+            self.persist(candidate)
+            self.data = candidate
+
     @property
     def nodes(self):
         return self.data['nodes']
+
+    @property
+    def inbox(self):
+        return next(key for key in self.data['roots'] if self.nodes[key]['title'] == INBOX_TITLE)
 
     @staticmethod
     def encode(data):
@@ -110,6 +142,7 @@ class Forest:
     def change(self, action):
         candidate = copy.deepcopy(self.data)
         result = action(candidate)
+        normalize(candidate)
         self.persist(candidate)
         self.undo_stack.append(self.data)
         self.undo_stack = self.undo_stack[-100:]
@@ -149,16 +182,18 @@ class Forest:
             pending.extend(nodes[item]['children'])
         return result
 
-    def add(self, title, target=None, mode='child', minutes=0, wait_until=0):
+    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0):
         title = title.strip()
         if not title:
             raise InvalidTree('请填写任务名称')
+        if target is None and title == INBOX_TITLE:
+            return self.inbox
         key = uuid.uuid4().hex
 
         def action(data):
             nodes = data['nodes']
             node = dict(title=title, kind='task' if target else 'category', children=[],
-                        minutes=minutes, wait_until=wait_until, collapsed=False)
+                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False)
             if target is None:
                 data['roots'].append(key)
             elif mode == 'child':
@@ -187,7 +222,9 @@ class Forest:
         return self.change(action)
 
     def edit(self, key, **values):
-        allowed = {'title', 'minutes', 'wait_until', 'collapsed'}
+        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed'}
+        if key == self.inbox and values.get('title', INBOX_TITLE) != INBOX_TITLE:
+            raise InvalidTree('零散任务是常驻分类，不能重命名')
         if set(values) - allowed:
             raise InvalidTree('不支持的字段')
         return self.change(lambda data: data['nodes'][key].update(values))
@@ -205,6 +242,8 @@ class Forest:
         self.change(action)
 
     def delete_branch(self, key):
+        if key == self.inbox:
+            raise InvalidTree('零散任务是常驻分类，可删除其中的任务，不能删除树干')
         def action(data):
             parent = self.parent(key, data)
             siblings = data['roots'] if parent is None else data['nodes'][parent]['children']
@@ -235,12 +274,22 @@ class Forest:
                 siblings.insert(siblings.index(target) + (mode == 'after'), key)
         self.change(action)
 
-    def ready(self, minutes=0, now=None):
+    def scheduled(self, scope='all', now=None):
         now = time.time() if now is None else now
-        return [(root, key) for root in self.data['roots']
-                for key in self.nodes[root]['children']
-                if self.nodes[key].get('wait_until', 0) <= now
-                and (not minutes or 0 < self.nodes[key].get('minutes', 0) <= minutes)]
+        today = datetime.fromtimestamp(now).date()
+        result = []
+        for key, node in self.nodes.items():
+            if node['kind'] != 'task':
+                continue
+            stamps = [node[field] for field in ('start_at', 'due_at') if node.get(field, 0)]
+            if not stamps:
+                continue
+            if scope == 'today' and not any(datetime.fromtimestamp(t).date() == today for t in stamps):
+                continue
+            if scope == 'overdue' and not (0 < node.get('due_at', 0) < now):
+                continue
+            result.append((self.category(key), key))
+        return sorted(result, key=lambda pair: min(self.nodes[pair[1]].get(field, 0) or float('inf') for field in ('start_at', 'due_at')))
 
     def import_file(self, path):
         candidate = validate(json.loads(Path(path).read_text()))
@@ -253,12 +302,13 @@ class Forest:
 
     def seed_example(self):
         def action(data):
-            def node(key, title, kind='task', children=None, minutes=0, wait_until=0):
+            data['nodes'].clear()
+            def node(key, title, kind='task', children=None, minutes=0, start_at=0, due_at=0):
                 data['nodes'][key] = dict(title=title, kind=kind, children=children or [],
-                                         minutes=minutes, wait_until=wait_until, collapsed=False)
+                                         minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False)
             data['roots'] = ['dev', 'learn', 'life']
             node('dev', '开发与实验', 'category', ['run', 'readlog'])
-            node('run', '程序正在运行', children=['check'], wait_until=time.time() + 20 * 60)
+            node('run', '程序正在运行', children=['check'], start_at=time.time() + 20 * 60)
             node('check', '检查结果，记录下一次改动', minutes=10)
             node('readlog', '整理上一次实验笔记', minutes=5)
             node('learn', '学习与积累', 'category', ['read'])

@@ -9,7 +9,7 @@ import sys
 import time
 
 from PySide6.QtCore import (Qt, QPointF, QRectF, QTimer, QMimeData, QSettings,
-                            QLockFile, QStandardPaths)
+                            QLockFile, QStandardPaths, QDateTime)
 from PySide6.QtGui import (QAction, QColor, QPainter, QPen, QBrush, QFont,
                            QPainterPath, QIcon, QPixmap, QDrag, QKeySequence, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox, QListWidget,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsObject, QMenu,
     QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QMessageBox,
-    QFileDialog, QSystemTrayIcon, QFrame, QAbstractItemView, QSizePolicy)
+    QFileDialog, QSystemTrayIcon, QFrame, QAbstractItemView, QSizePolicy,
+    QCheckBox, QDateTimeEdit)
 
 from .model import Forest, InvalidTree
 from . import desktop
-from .input_method import configure_input_method
+from .input_method import configure_input_method, capture_input_mode, restore_input_mode
+from .reminders import Reminders, schedule_text
 
 MIME = 'application/x-task-grove-node'
 GREEN = '#28664f'
@@ -93,37 +95,62 @@ def button(text, callback, primary=False):
 
 
 class TaskDialog(QDialog):
-    def __init__(self, parent, title, node=None, category=False):
+    def __init__(self, parent, title, node=None, category=False, inbox=False):
+        self.input_mode = capture_input_mode()
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setMinimumWidth(390)
+        self.setMinimumWidth(440)
         self.category = category
+        self.operation = 'save'
+        self.original = node or {}
         form = QFormLayout(self)
         form.setContentsMargins(24, 24, 24, 24)
         form.setSpacing(14)
-        self.name = QLineEdit((node or {}).get('title', ''))
+        self.name = QLineEdit(self.original.get('title', ''))
         self.name.setMaxLength(200)
         self.name.setPlaceholderText('写下一个具体、能开始的动作')
+        self.name.setReadOnly(inbox)
         form.addRow('名称', self.name)
         self.minutes = QSpinBox()
         self.minutes.setRange(0, 1440)
         self.minutes.setSpecialValueText('未估时')
         self.minutes.setSuffix(' 分钟')
-        self.minutes.setValue((node or {}).get('minutes', 0))
-        self.wait = QSpinBox()
-        self.wait.setRange(0, 10080)
-        self.wait.setSpecialValueText('现在可做')
-        self.wait.setSuffix(' 分钟后提醒')
-        self.original_wait = (node or {}).get('wait_until', 0)
-        self.wait.setValue(max(0, int((self.original_wait - time.time() + 59) // 60)))
-        self.wait_changed = False
-        self.wait.valueChanged.connect(lambda: setattr(self, 'wait_changed', True))
+        self.minutes.setValue(self.original.get('minutes', 0))
+        self.time_inputs = {}
+        self.time_dirty = set()
         if not category:
             form.addRow('预计用时', self.minutes)
-            form.addRow('等待时间', self.wait)
-            hint = QLabel('等待适合编译、训练或下载；到时提醒你手动完成。\n树枝表示先后关系，同层分支可以并行。')
+            for field, label in (('start_at', '开始时间'), ('due_at', '截止时间')):
+                row = QWidget()
+                layout = QHBoxLayout(row)
+                layout.setContentsMargins(0, 0, 0, 0)
+                check = QCheckBox('指定')
+                stamp = self.original.get(field, 0)
+                check.setChecked(bool(stamp))
+                editor = QDateTimeEdit()
+                editor.setCalendarPopup(True)
+                editor.setDisplayFormat('yyyy-MM-dd HH:mm')
+                editor.setDateTime(QDateTime.fromSecsSinceEpoch(int(stamp or time.time() + 3600)))
+                editor.setEnabled(bool(stamp))
+                check.toggled.connect(editor.setEnabled)
+                check.toggled.connect(lambda checked, f=field: self.time_dirty.add(f))
+                editor.dateTimeChanged.connect(lambda value, f=field: self.time_dirty.add(f))
+                layout.addWidget(check)
+                layout.addWidget(editor, 1)
+                self.time_inputs[field] = check, editor
+                form.addRow(label, row)
+            hint = QLabel('指定任一时间即进入「已定时任务」。\n提前 1 小时、10 分钟及到时提醒；步骤可以跳着做。')
             hint.setObjectName('muted')
             form.addRow(hint)
+        if node:
+            operations = QHBoxLayout()
+            if not category:
+                operations.addWidget(button('✓ 完成此任务', lambda: self.finish('complete')))
+                operations.addWidget(button('删除此节点', lambda: self.finish('remove')))
+            delete = button('删除整棵树…' if category else '删除整条分支…', lambda: self.finish('branch'))
+            delete.setEnabled(not inbox)
+            operations.addWidget(delete)
+            form.addRow(operations)
         actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         actions.button(QDialogButtonBox.StandardButton.Ok).setText('保存')
         actions.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
@@ -134,17 +161,40 @@ class TaskDialog(QDialog):
         form.addRow(actions)
         self.name.setFocus()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        restore_input_mode(self.input_mode, self)
+
+    def done(self, result):
+        mode = capture_input_mode()
+        parent = self.parentWidget()
+        super().done(result)
+        if parent is not None:
+            restore_input_mode(mode, parent)
+
+    def finish(self, operation):
+        self.operation = operation
+        super().accept()
+
+    def accept(self):
+        values = self.values()
+        if values.get('start_at') and values.get('due_at') and values['due_at'] < values['start_at']:
+            QMessageBox.warning(self, '时间需要调整', '截止时间不能早于开始时间。')
+            return
+        if self.name.text().strip():
+            super().accept()
+
     def values(self):
-        waiting = self.original_wait
-        if self.wait_changed:
-            waiting = time.time() + self.wait.value() * 60 if self.wait.value() else 0
-        return dict(title=self.name.text().strip(), minutes=self.minutes.value(), wait_until=waiting)
+        values = dict(title=self.name.text().strip(), minutes=self.minutes.value())
+        for field, (check, editor) in self.time_inputs.items():
+            values[field] = (editor.dateTime().toSecsSinceEpoch() if field in self.time_dirty else self.original.get(field, 0)) if check.isChecked() else 0
+        return values
 
 
 class Card(QGraphicsObject):
-    def __init__(self, window, key, ready=False):
+    def __init__(self, window, key):
         super().__init__()
-        self.window, self.key, self.ready = window, key, ready
+        self.window, self.key = window, key
         self.node = window.forest.nodes[key]
         self.root = self.node['kind'] == 'category'
         self.hover = False
@@ -152,21 +202,23 @@ class Card(QGraphicsObject):
         self.moved = False
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.setToolTip(self.node['title'] + '\n' + ('点击 ＋ 添加步骤；右键管理分类' if self.root else
-            '点击任务完成 · 拖拽移动整条分支 · 右键插入、编辑或等待'))
+        self.setToolTip(self.node['title'] + '\n' + ('点击 ＋ 添加步骤；右键编辑分类' if self.root else
+            '左键选中并拖动 · 勾选完成 · 右键直接编辑\n' + schedule_text(self.node)))
 
     def boundingRect(self):
         return QRectF(-3, -3, CARD_W + 6, CARD_H + 6)
 
     def paint(self, p, option, widget=None):
+        if self.key not in self.window.forest.nodes:
+            return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         query = self.window.search.text().strip().casefold()
         matched = query and query in self.node['title'].casefold()
         fill = GREEN if self.root else ('#f0f6e9' if self.hover else '#ffffff')
-        border = '#d7e3d3' if not self.ready else '#8cb59a'
+        border = '#28664f' if self.key == self.window.selected_node else '#d7e3d3'
         if matched:
             border = '#e2a43d'
-        p.setPen(QPen(QColor(border), 2 if self.hover or matched else 1))
+        p.setPen(QPen(QColor(border), 2 if self.hover or matched or self.key == self.window.selected_node else 1))
         p.setBrush(QColor(fill))
         p.drawRoundedRect(QRectF(0, 0, CARD_W, CARD_H), 13, 13)
         color = '#ffffff' if self.root else INK
@@ -176,11 +228,20 @@ class Card(QGraphicsObject):
         font.setBold(self.root)
         p.setFont(font)
         text = self.node['title']
+        text_x = 14 if self.root else 40
+        text_width = 154 if self.root else 128
+        if not self.root:
+            p.setBrush(QColor('#ffffff'))
+            p.setPen(QPen(QColor('#7b9e83'), 1.4))
+            p.drawRoundedRect(QRectF(13, 23, 18, 18), 4, 4)
+            if self.hover:
+                p.drawText(QRectF(13, 20, 18, 22), Qt.AlignmentFlag.AlignCenter, '✓')
+            p.setPen(QColor(color))
         # Two lines, with a tooltip for the full title.
         metrics = p.fontMetrics()
         lines, line = [], ''
         for char in text:
-            if metrics.horizontalAdvance(line + char) > 151:
+            if metrics.horizontalAdvance(line + char) > text_width:
                 lines.append(line)
                 line = char
             else:
@@ -189,22 +250,20 @@ class Card(QGraphicsObject):
             lines.append(line)
         if len(lines) > 2:
             lines = lines[:2]
-            lines[1] = metrics.elidedText(lines[1] + '…', Qt.TextElideMode.ElideRight, 151)
-        p.drawText(QRectF(14, 10, 154, 40), Qt.AlignmentFlag.AlignVCenter, '\n'.join(lines))
+            lines[1] = metrics.elidedText(lines[1] + '…', Qt.TextElideMode.ElideRight, text_width)
+        p.drawText(QRectF(text_x, 10, text_width, 40), Qt.AlignmentFlag.AlignVCenter, '\n'.join(lines))
         p.setFont(QFont(self.window.font().family(), 9))
         if self.root:
             meta = f'{len(self.window.forest.descendants(self.key))} 个步骤'
             p.setPen(QColor('#c5dec7'))
         else:
-            wait = self.node.get('wait_until', 0)
-            if wait > time.time():
-                meta = f'等待 {max(1, int((wait - time.time() + 59) // 60))} 分钟'
-                p.setPen(QColor('#ad8540'))
-            else:
-                meta = '现在可做' if self.ready else '后续步骤'
-                p.setPen(QColor(GREEN if self.ready else MUTED))
             minutes = self.node.get('minutes', 0)
-            meta += f'  ·  {minutes} 分钟' if minutes else '  ·  未估时'
+            meta = f'{minutes} 分钟' if minutes else '未估时'
+            if self.node.get('due_at'):
+                meta = '截止 ' + QDateTime.fromSecsSinceEpoch(int(self.node['due_at'])).toString('MM-dd HH:mm')
+            elif self.node.get('start_at'):
+                meta = '开始 ' + QDateTime.fromSecsSinceEpoch(int(self.node['start_at'])).toString('MM-dd HH:mm')
+            p.setPen(QColor(MUTED))
         p.drawText(QRectF(14, 57, 178, 17), Qt.AlignmentFlag.AlignLeft, meta)
         p.setPen(QColor('#d7ead2' if self.root else '#6c9477'))
         p.setFont(QFont(self.window.font().family(), 19))
@@ -212,7 +271,7 @@ class Card(QGraphicsObject):
         if self.node['children']:
             p.setFont(QFont(self.window.font().family(), 10))
             p.drawText(QRectF(175, 49, 28, 25), Qt.AlignmentFlag.AlignCenter,
-                       '▸' if self.node.get('collapsed') else '▾')
+                       '▸' if self.window.is_collapsed(self.key) else '▾')
 
     def hoverEnterEvent(self, event):
         self.hover = True
@@ -225,13 +284,15 @@ class Card(QGraphicsObject):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.pressed = event.screenPos()
+            self.press_local = event.pos()
+            self.window.select_node(self.key)
             self.moved = False
             event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.pressed is None or self.root or self.moved:
+        if self.pressed is None or self.root or self.moved or self.press_local.x() >= 170 or self.press_local.x() <= 36:
             return
         if (event.screenPos() - self.pressed).manhattanLength() < QApplication.startDragDistance():
             return
@@ -259,14 +320,14 @@ class Card(QGraphicsObject):
             if pos.x() >= 170 and pos.y() < 49:
                 self.window.add_menu(self.key, event.screenPos())
             elif pos.x() >= 170 and self.node['children']:
-                self.window.perform(lambda: self.window.forest.edit(self.key, collapsed=not self.node.get('collapsed', False)))
-            elif not self.root:
+                self.window.toggle_branch(self.key)
+            elif not self.root and QRectF(10, 19, 25, 27).contains(pos):
                 self.window.complete(self.key)
         self.pressed = None
         event.accept()
 
     def contextMenuEvent(self, event):
-        self.window.node_menu(self.key, event.screenPos())
+        self.window.edit_task(self.key)
         event.accept()
 
 
@@ -300,7 +361,6 @@ class ForestView(QGraphicsView):
         self.scene().clear()
         self.cards = {}
         model = self.window.forest
-        ready = {key for _, key in model.ready()}
         roots = model.data['roots']
         if self.window.selected in roots:
             roots = [self.window.selected]
@@ -308,18 +368,18 @@ class ForestView(QGraphicsView):
 
         def height(key):
             n = model.nodes[key]
-            if not n['children'] or n.get('collapsed'):
+            if not n['children'] or self.window.is_collapsed(key):
                 return ROW
             return max(ROW, sum(height(child) for child in n['children']))
 
         def draw(key, depth, top):
             h = height(key)
-            card = Card(self.window, key, key in ready)
+            card = Card(self.window, key)
             card.setPos(28 + depth * COL, top + (h - CARD_H) / 2)
             self.scene().addItem(card)
             self.cards[key] = card
             child_top = top
-            if not model.nodes[key].get('collapsed'):
+            if not self.window.is_collapsed(key):
                 for child in model.nodes[key]['children']:
                     other = draw(child, depth + 1, child_top)
                     start = card.pos() + QPointF(CARD_W, CARD_H / 2)
@@ -342,6 +402,15 @@ class ForestView(QGraphicsView):
             hint.setDefaultTextColor(QColor(MUTED))
             hint.setPos(50, 140)
         self.scene().setSceneRect(self.scene().itemsBoundingRect().adjusted(-20, -20, 80, 70))
+
+    def contextMenuEvent(self, event):
+        position = self.mapToScene(event.pos())
+        for key, card in self.cards.items():
+            if QRectF(0, 0, CARD_W, CARD_H).contains(card.mapFromScene(position)):
+                self.window.edit_task(key)
+                event.accept()
+                return
+        super().contextMenuEvent(event)
 
     def clear_drop(self):
         if self.drop_hint is not None:
@@ -442,7 +511,7 @@ class CategoryList(QListWidget):
     def show_menu(self, pos):
         item = self.itemAt(pos)
         if item and item.data(Qt.ItemDataRole.UserRole):
-            self.window.node_menu(item.data(Qt.ItemDataRole.UserRole), self.viewport().mapToGlobal(pos))
+            self.window.edit_task(item.data(Qt.ItemDataRole.UserRole))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(MIME):
@@ -483,8 +552,10 @@ class Window(QMainWindow):
         super().__init__()
         self.forest = forest
         self.selected = None
+        self.selected_node = None
+        self.overview_expanded = set()
+        self.reminders = Reminders(forest.path.with_name('reminders.json'))
         self.quitting = False
-        self.notified = set()
         self.settings = QSettings()
         self.setWindowTitle('枝序 · Task Grove')
         self.setWindowIcon(icon())
@@ -510,7 +581,9 @@ class Window(QMainWindow):
         self.refresh()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(15000)
+        self.timer.start(10000)
+        if tray_enabled:
+            QTimer.singleShot(2500, self.tick)
         for sequence, callback in [('Ctrl+Z', lambda: self.perform(self.forest.undo, '已撤销')),
                                    ('Ctrl+Shift+Z', lambda: self.perform(self.forest.redo, '已重做')),
                                    ('Ctrl+N', self.new_task), ('Ctrl+Shift+N', self.new_category),
@@ -544,8 +617,8 @@ class Window(QMainWindow):
         side.addWidget(label)
         self.categories = CategoryList(self)
         self.categories.currentItemChanged.connect(self.select_category)
-        side.addWidget(self.categories, 1)
         side.addWidget(button('＋ 新类别', self.new_category))
+        side.addWidget(self.categories, 1)
         side.addSpacing(12)
         self.count_label = QLabel()
         self.count_label.setObjectName('muted')
@@ -573,7 +646,7 @@ class Window(QMainWindow):
                                ('适应', lambda: self.view.fit())]:
             sub.addWidget(button(text, callback))
         content.addLayout(sub)
-        help_text = QLabel('点击任务完成  ·  ＋ 拆分或插入  ·  拖动调整树枝  ·  右键更多')
+        help_text = QLabel('左键选中 / 拖动  ·  勾选完成  ·  右键编辑  ·  ＋ 添加或插入')
         help_text.setObjectName('muted')
         content.addWidget(help_text)
         self.view = ForestView(self)
@@ -583,13 +656,13 @@ class Window(QMainWindow):
         divider.setStyleSheet('color: #e0e7da;')
         content.addWidget(divider)
         ready_top = QHBoxLayout()
-        self.ready_label = QLabel('这段空档，可以做什么？')
+        self.ready_label = QLabel('已定时任务')
         self.ready_label.setStyleSheet('font-weight: 600;')
         ready_top.addWidget(self.ready_label, 1)
         self.time_filter = QComboBox()
-        for title, value in [('不限时长', 0), ('5 分钟内', 5), ('10 分钟内', 10), ('15 分钟内', 15), ('30 分钟内', 30), ('1 小时内', 60)]:
+        for title, value in [('全部定时', 'all'), ('今日任务', 'today'), ('已逾期', 'overdue')]:
             self.time_filter.addItem(title, value)
-        self.time_filter.currentIndexChanged.connect(self.refresh_ready)
+        self.time_filter.currentIndexChanged.connect(self.refresh_scheduled)
         ready_top.addWidget(self.time_filter)
         content.addLayout(ready_top)
         self.ready_list = QListWidget()
@@ -639,23 +712,24 @@ class Window(QMainWindow):
         self.count_label.setText(f'{len(self.forest.data["roots"])} 棵树 · {sum(n["kind"] == "task" for n in self.forest.nodes.values())} 个步骤')
         self.undo_button.setEnabled(bool(self.forest.undo_stack))
         self.view.render_forest()
-        self.refresh_ready()
+        self.refresh_scheduled()
 
     def select_category(self, current, previous):
         self.selected = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if self.selected is None:
+            self.overview_expanded.clear()
         self.heading.setText(self.forest.nodes[self.selected]['title'] if self.selected in self.forest.nodes else '所有任务树')
         self.view.render_forest()
         self.view.resetTransform()
         self.view.horizontalScrollBar().setValue(0)
         self.view.verticalScrollBar().setValue(0)
-        self.refresh_ready()
+        self.refresh_scheduled()
 
-    def refresh_ready(self):
+    def refresh_scheduled(self):
+        scroll = self.ready_list.verticalScrollBar().value()
         self.ready_list.clear()
-        tasks = self.forest.ready(self.time_filter.currentData() or 0)
-        if self.selected:
-            tasks = [(root, key) for root, key in tasks if root == self.selected]
-        self.ready_label.setText(f'这段空档，可以做什么？  ·  {len(tasks)} 项')
+        tasks = self.forest.scheduled(self.time_filter.currentData() or 'all')
+        self.ready_label.setText(f'已定时任务  ·  {len(tasks)} 项')
         for root, key in tasks:
             node = self.forest.nodes[key]
             item = QListWidgetItem()
@@ -666,7 +740,8 @@ class Window(QMainWindow):
             title.setToolTip(node['title'])
             title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             box.addWidget(title, 1)
-            meta = QLabel(f'{self.forest.nodes[root]["title"][:12]} · ' + (f'{node["minutes"]} 分钟' if node['minutes'] else '未估时'))
+            meta = QLabel(schedule_text(node))
+            meta.setToolTip(self.forest.nodes[root]['title'] + '\n' + schedule_text(node))
             meta.setObjectName('muted')
             box.addWidget(meta)
             done = button('✓', lambda checked=False, k=key: self.complete(k))
@@ -678,7 +753,8 @@ class Window(QMainWindow):
             self.ready_list.addItem(item)
             self.ready_list.setItemWidget(item, row)
         if not tasks:
-            self.ready_list.addItem('没有符合条件的步骤。试试切换类别或放宽时长；有时长筛选时不含未估时任务。')
+            self.ready_list.addItem('暂无定时任务。右键编辑任一任务，指定开始时间或截止时间。')
+        self.ready_list.verticalScrollBar().setValue(scroll)
 
     def find_task(self, text):
         for card in self.view.cards.values():
@@ -701,14 +777,15 @@ class Window(QMainWindow):
             parent = self.forest.parent(parent)
         if hidden:
             self.perform(lambda: self.forest.change(lambda data: [data['nodes'][k].update(collapsed=False) for k in hidden]))
-        if self.selected and self.selected != root:
-            self.selected = root
+        self.selected = root
+        self.selected_node = key
         self.refresh()
         if key in self.view.cards:
             self.view.centerOn(self.view.cards[key])
 
     def new_category(self):
-        self.reveal()
+        if not self.isVisible():
+            self.reveal()
         dialog = TaskDialog(self, '种下一棵任务树', category=True)
         if dialog.exec():
             key = self.perform(lambda: self.forest.add(dialog.values()['title']), '已添加类别，从树干的 ＋ 开始添加步骤')
@@ -718,30 +795,29 @@ class Window(QMainWindow):
     def new_task(self):
         roots = self.forest.data['roots']
         if not roots:
-            self.new_category()
             return
         root = self.selected
-        if root is None:
-            menu = QMenu(self)
-            for key in roots:
-                menu.addAction(self.forest.nodes[key]['title'], lambda checked=False, k=key: self.add_task(k))
-            menu.exec(self.mapToGlobal(self.rect().center()))
-        else:
-            self.add_task(root)
+        self.add_task(root or self.forest.inbox)
 
-    def add_task(self, target, mode='child'):
+    def add_task(self, target, mode='child', input_mode=None):
         title = {'child': '添加后续分支', 'before': '在此前插入一步', 'after': '在此后插入一步', 'sibling': '添加同层并行任务'}[mode]
         dialog = TaskDialog(self, title)
+        if input_mode is not None:
+            dialog.input_mode = input_mode
         if dialog.exec():
-            self.perform(lambda: self.forest.add(target=target, mode=mode, **dialog.values()))
+            key = self.perform(lambda: self.forest.add(target=target, mode=mode, **dialog.values()))
+            if key:
+                self.selected = self.forest.category(key)
+                self.selected_node = key
 
     def add_menu(self, key, pos):
+        input_mode = capture_input_mode()
         menu = QMenu(self)
-        menu.addAction('＋ 添加后续分支', lambda: self.add_task(key))
+        menu.addAction('＋ 添加后续分支', lambda: self.add_task(key, input_mode=input_mode))
         if self.forest.nodes[key]['kind'] == 'task':
-            menu.addAction('↑ 在此前插入一步', lambda: self.add_task(key, 'before'))
-            menu.addAction('↓ 在此后插入一步', lambda: self.add_task(key, 'after'))
-            menu.addAction('⑂ 添加同层并行任务', lambda: self.add_task(key, 'sibling'))
+            menu.addAction('↑ 在此前插入一步', lambda: self.add_task(key, 'before', input_mode))
+            menu.addAction('↓ 在此后插入一步', lambda: self.add_task(key, 'after', input_mode))
+            menu.addAction('⑂ 添加同层并行任务', lambda: self.add_task(key, 'sibling', input_mode))
         menu.exec(pos)
 
     def complete(self, key):
@@ -750,39 +826,20 @@ class Window(QMainWindow):
         title = self.forest.nodes[key]['title']
         self.perform(lambda: self.forest.complete(key), f'已完成「{title[:35]}」 · 后续已接上 · Ctrl+Z 撤销')
 
-    def node_menu(self, key, pos):
+    def edit_task(self, key):
         if key not in self.forest.nodes:
             return
+        self.select_node(key)
         node = self.forest.nodes[key]
-        category = node['kind'] == 'category'
-        menu = QMenu(self)
-        if not category:
-            menu.addAction('✓ 完成，保留后续分支', lambda: self.complete(key))
-        menu.addAction('编辑名称 / 时间' if not category else '重命名类别', lambda: self.edit_task(key))
-        add = menu.addMenu('＋ 添加或插入步骤')
-        add.addAction('添加后续分支', lambda: self.add_task(key))
-        if not category:
-            for title, mode in [('在此前插入一步', 'before'), ('在此后插入一步', 'after'), ('同层并行任务', 'sibling')]:
-                add.addAction(title, lambda checked=False, m=mode: self.add_task(key, m))
-            wait = menu.addMenu('等待 / 暂放')
-            for minutes in [5, 15, 30, 60]:
-                wait.addAction(f'{minutes} 分钟后提醒', lambda checked=False, m=minutes: self.perform(lambda: self.forest.edit(key, wait_until=time.time() + m * 60)))
-            wait.addAction('结束等待，现在可做', lambda: self.perform(lambda: self.forest.edit(key, wait_until=0)))
-            move = menu.addMenu('移动到类别')
-            for root in self.forest.data['roots']:
-                move.addAction(self.forest.nodes[root]['title'], lambda checked=False, r=root: self.perform(lambda: self.forest.move(key, r)))
-        if node['children']:
-            menu.addAction('展开分支' if node.get('collapsed') else '收起分支',
-                           lambda: self.perform(lambda: self.forest.edit(key, collapsed=not node.get('collapsed', False))))
-        menu.addSeparator()
-        menu.addAction('删除整棵树…' if category else '删除整条分支…', lambda: self.delete_branch(key))
-        menu.exec(pos)
-
-    def edit_task(self, key):
-        node = self.forest.nodes[key]
-        dialog = TaskDialog(self, '编辑类别' if node['kind'] == 'category' else '编辑任务', node, node['kind'] == 'category')
+        dialog = TaskDialog(self, '编辑类别' if node['kind'] == 'category' else '编辑任务', node,
+                            node['kind'] == 'category', key == self.forest.inbox)
         if dialog.exec():
-            self.perform(lambda: self.forest.edit(key, **dialog.values()))
+            if dialog.operation in ('complete', 'remove'):
+                self.complete(key)
+            elif dialog.operation == 'branch':
+                self.delete_branch(key)
+            else:
+                self.perform(lambda: self.forest.edit(key, **dialog.values()))
 
     def delete_branch(self, key):
         count = 1 + len(self.forest.descendants(key))
@@ -796,7 +853,7 @@ class Window(QMainWindow):
         menu.addAction('使用说明', self.show_help)
         menu.addAction('导出任务备份…', self.export_data)
         menu.addAction('导入任务备份…', self.import_data)
-        if not self.forest.nodes:
+        if not any(n['kind'] == 'task' for n in self.forest.nodes.values()):
             menu.addAction('载入示例任务树', lambda: self.perform(self.forest.seed_example))
         auto = menu.addAction('登录桌面时自动启动')
         auto.setCheckable(True)
@@ -816,17 +873,17 @@ class Window(QMainWindow):
 
     def show_help(self):
         QMessageBox.information(self, '枝序 · 使用说明',
-            '一类工作是一棵树，树枝从左向右表示先后步骤，同层分支可以并行。\n\n'
-            '• 点击任务文字：完成并移除该步，后续步骤自动接到前面。\n'
-            '• 点击 ＋ 或右键：新增分支，在某步前/后插入，添加并行任务。\n'
-            '• 拖动任务：中间接为后续；上/下边缘调整同层顺序；拖到左侧类别可跨类移动。\n'
-            '• 完成或移动会携带/接续整条分支；Ctrl+Z 撤销，Ctrl+Shift+Z 重做。\n'
-            '• 右键设置等待，倒计时结束后通知，不会自动完成。\n'
-            '• 下方只列出没有前置任务且不在等待中的步骤。限时筛选需要先填写预计时间。\n'
-            '• Ctrl+滚轮缩放；拖动画布空白处平移；小箭头收起分支。\n'
-            '• 关闭、最小化或 Esc 收到托盘；通过托盘或更多菜单退出。\n\n'
-            f'任务自动保存在：{self.forest.path}\n'
-            '前一次保存保存在 tasks.json.bak。首次使用可从更多菜单载入示例。')
+            '一类工作是一棵树，步骤可以跳着做。零散任务是常驻收纳树。\n\n'
+            '• 左键选择并拖动节点，勾选方框完成；后续分支自动接上。\n'
+            '• 右键直接打开编辑页，可以改名、定时、完成或删除。\n'
+            '• 点击 ＋ 添加后续、在前后插入或添加同层任务。\n'
+            '• 拖到中间接为后续；上/下边缘同层重排；左侧类别跨类移动。\n'
+            '• 指定开始/截止时间后进入底部「已定时任务」。\n'
+            '• 提前 1 小时、10 分钟及到时提醒；开机汇总今日未完成任务。\n'
+            '• 所有任务树默认收起步骤；点击小箭头或左侧类别展开。\n'
+            '• Ctrl+Z 撤销，Ctrl+Shift+Z 重做；Ctrl+滚轮缩放。\n'
+            '• 关闭、最小化或 Esc 收到托盘，通过更多菜单退出。\n\n'
+            f'数据自动保存在：{self.forest.path}\n')
 
     def export_data(self):
         path, _ = QFileDialog.getSaveFileName(self, '导出备份', str(Path.home() / 'task-grove-backup.json'), 'JSON (*.json)')
@@ -838,26 +895,60 @@ class Window(QMainWindow):
         if path and QMessageBox.question(self, '导入任务', '导入会替换当前任务树；可以 Ctrl+Z 撤销。继续？') == QMessageBox.StandardButton.Yes:
             self.perform(lambda: self.forest.import_file(path), '已导入任务，可按 Ctrl+Z 撤销')
 
+    def select_node(self, key):
+        old = self.selected_node
+        self.selected_node = key
+        for item in (old, key):
+            if item in self.view.cards:
+                self.view.cards[item].update()
+
+    def is_collapsed(self, key):
+        if self.selected is None and self.forest.nodes[key]['kind'] == 'category':
+            return key not in self.overview_expanded
+        return self.forest.nodes.get(key, {}).get('collapsed', False)
+
+    def toggle_branch(self, key):
+        if self.selected is None and self.forest.nodes[key]['kind'] == 'category':
+            if key in self.overview_expanded:
+                self.overview_expanded.remove(key)
+            else:
+                self.overview_expanded.add(key)
+            QTimer.singleShot(0, self.view.render_forest)
+        else:
+            self.perform(lambda: self.forest.edit(key, collapsed=not self.is_collapsed(key)))
+
+    def notify(self, title, body):
+        import shutil
+        import subprocess
+        sender = shutil.which('notify-send')
+        if sender:
+            subprocess.Popen([sender, '--app-name=枝序', '--icon=' + str(desktop.ROOT / 'assets/icon.svg'), title, body],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 10000)
+        self.message(title + ' · ' + body.replace('\n', ' · '))
+
     def tick(self):
-        due = [(key, node) for key, node in self.forest.nodes.items()
-               if node['kind'] == 'task' and 0 < node.get('wait_until', 0) <= time.time()
-               and (key, node.get('wait_until')) not in self.notified]
-        for key, node in due:
-            self.notified.add((key, node['wait_until']))
-        if due:
-            titles = '、'.join(node['title'] for _, node in due)
-            self.tray.showMessage('等待结束，可以回来看看', titles, QSystemTrayIcon.MessageIcon.Information, 8000)
-            self.message('等待结束：' + titles)
-        self.refresh_ready()
-        ready = {key for _, key in self.forest.ready()}
-        for key, card in self.view.cards.items():
-            card.ready = key in ready
+        try:
+            self.reminders.poll(self.forest, self.notify)
+        except OSError as error:
+            self.message('提醒记录未保存：' + str(error))
+        self.refresh_scheduled()
+        for card in self.view.cards.values():
             card.update()
 
     def reveal(self):
-        self.showNormal()
+        mode = capture_input_mode()
+        if self.isMinimized():
+            if self.settings.value('maximized', False, type=bool):
+                self.showMaximized()
+            else:
+                self.showNormal()
+        elif not self.isVisible():
+            self.showMaximized() if self.settings.value('maximized', False, type=bool) else self.show()
         self.raise_()
         self.activateWindow()
+        restore_input_mode(mode, self)
 
     def toggle(self):
         self.hide() if self.isVisible() and not self.isMinimized() else self.reveal()
@@ -865,12 +956,14 @@ class Window(QMainWindow):
     def hide_to_tray(self):
         if QSystemTrayIcon.isSystemTrayAvailable() and self.tray.isVisible():
             self.settings.setValue('geometry', self.saveGeometry())
+            self.settings.setValue('maximized', self.isMaximized() or bool(self.windowState() & Qt.WindowState.WindowMaximized))
             self.hide()
         else:
             self.showMinimized()
 
     def closeEvent(self, event):
         self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue('maximized', self.isMaximized() or bool(self.windowState() & Qt.WindowState.WindowMaximized))
         if self.quitting:
             event.accept()
         elif QSystemTrayIcon.isSystemTrayAvailable() and self.tray.isVisible():
@@ -891,6 +984,7 @@ class Window(QMainWindow):
     def quit_app(self):
         self.quitting = True
         self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue('maximized', self.isMaximized() or bool(self.windowState() & Qt.WindowState.WindowMaximized))
         self.tray.hide()
         QApplication.instance().quit()
 

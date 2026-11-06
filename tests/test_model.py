@@ -75,23 +75,51 @@ class ForestTests(unittest.TestCase):
         self.f.edit(self.a, title='新的名字')
         self.assertEqual(self.f.redo_stack, [])
 
-    def test_ready_excludes_dependencies_waiting_and_unknown_duration(self):
-        self.f.edit(self.a, minutes=5, wait_until=100)
-        parallel = self.f.add('短任务', self.r, minutes=3)
-        self.assertEqual(self.f.ready(5, now=50), [(self.r, parallel)])
-        self.assertEqual(self.f.ready(5, now=101), [(self.r, self.a), (self.r, parallel)])
-        self.f.edit(self.a, minutes=0)
-        self.assertEqual(self.f.ready(5, now=101), [(self.r, parallel)])
-        self.assertEqual(len(self.f.ready(now=101)), 2)
+    def test_scheduled_includes_deep_nodes_and_ignores_parent_progress(self):
+        self.f.edit(self.b, start_at=200)
+        self.f.edit(self.c, due_at=300)
+        self.assertEqual(self.f.scheduled(now=100), [(self.r, self.b), (self.r, self.c)])
+        self.assertEqual(self.f.scheduled('overdue', now=350), [(self.r, self.c)])
+        self.f.complete(self.b)  # Skipping the parent is allowed.
+        self.assertEqual(self.f.scheduled(now=350), [(self.r, self.c)])
+
+    def test_inbox_always_exists_and_is_protected(self):
+        inbox = self.f.inbox
+        self.assertEqual(self.f.nodes[inbox]['title'], '零散任务')
+        with self.assertRaises(InvalidTree):
+            self.f.delete_branch(inbox)
+        with self.assertRaises(InvalidTree):
+            self.f.edit(inbox, title='改名')
+        self.assertEqual(self.f.add('零散任务'), inbox)
+
+    def test_old_data_gets_inbox_and_wait_is_migrated_without_losing_nodes(self):
+        original = copy.deepcopy(self.f.data)
+        inbox = self.f.inbox
+        del original['nodes'][inbox]
+        original['roots'].remove(inbox)
+        original['nodes'][self.b]['wait_until'] = 600
+        self.path.write_text(json.dumps(original))
+        loaded = Forest(self.path)
+        self.assertEqual(loaded.nodes[self.b]['start_at'], 600)
+        self.assertNotIn('wait_until', loaded.nodes[self.b])
+        self.assertEqual(set(loaded.nodes) - {loaded.inbox}, set(original['nodes']))
+        self.assertEqual(json.loads(self.path.with_suffix('.json.bak').read_text()), original)
+
+    def test_schedule_fields_validate_and_round_trip(self):
+        with self.assertRaises(InvalidTree):
+            self.f.edit(self.b, start_at=500, due_at=400)
+        self.f.edit(self.b, start_at=400, due_at=500)
+        self.assertEqual(Forest(self.path).nodes[self.b]['due_at'], 500)
+        self.f.edit(self.b, start_at=0, due_at=0)
+        self.assertEqual(self.f.scheduled(), [])
 
     def test_delete_branch_and_undo(self):
         self.f.delete_branch(self.a)
-        self.assertEqual(set(self.f.nodes), {self.r})
+        self.assertEqual(set(self.f.nodes), {self.r, self.f.inbox})
         self.f.undo()
-        self.assertEqual(set(self.f.nodes), {self.r, self.a, self.b, self.c})
+        self.assertEqual(set(self.f.nodes), {self.r, self.a, self.b, self.c, self.f.inbox})
         self.f.delete_branch(self.r)
-        self.assertEqual(self.f.data['roots'], [])
-        self.assertEqual(self.f.nodes, {})
+        self.assertEqual(self.f.data['roots'], [self.f.inbox])
 
     def test_export_import_and_undo(self):
         export = Path(self.temp.name) / 'export.json'
@@ -101,7 +129,7 @@ class ForestTests(unittest.TestCase):
         self.f.import_file(export)
         self.assertEqual(self.f.data, original)
         self.f.undo()
-        self.assertEqual(len(self.f.data['roots']), 2)
+        self.assertEqual(len(self.f.data['roots']), 3)
         with self.assertRaises(InvalidTree):
             self.f.export_file(self.path)
 
