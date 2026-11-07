@@ -22,6 +22,20 @@ apply_theme(APP)
 
 
 class GuiTests(unittest.TestCase):
+    def test_in_progress_edit_and_badge_coexist_with_today_and_priority(self):
+        self.forest.edit('readlog',priority=True,planned_for=date.today().isoformat())
+        dialog=TaskDialog(self.window,'编辑任务',self.forest.nodes['readlog'])
+        dialog.in_progress.setChecked(True)
+        self.forest.edit('readlog',**dialog.values());self.window.refresh();APP.processEvents()
+        self.assertIn('readlog',self.window.view.today_keys)
+        self.assertTrue(self.window.findChildren(QLabel,'inProgress'))
+        self.assertTrue(self.window.findChildren(QLabel,'priority'))
+        reopened=TaskDialog(self.window,'编辑任务',self.forest.nodes['readlog'])
+        self.assertTrue(reopened.in_progress.isChecked())
+        reopened.in_progress.setChecked(False);self.forest.edit('readlog',**reopened.values());self.window.refresh();APP.processEvents()
+        active=[self.window.ready_list.itemWidget(self.window.ready_list.item(i)) for i in range(self.window.ready_list.count())]
+        self.assertFalse(any(w.findChildren(QLabel,'inProgress') for w in active if w is not None))
+
     def test_today_highlights_and_later_tab_order(self):
         self.forest.edit('readlog',priority=True,planned_for='')
         self.window.refresh()

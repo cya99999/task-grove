@@ -80,6 +80,7 @@ QScrollBar::handle:horizontal { background: #c7d4c5; border-radius: 4px; min-wid
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QTabBar::tab { background: transparent; color: #718376; border-bottom: 2px solid transparent; padding: 7px 10px; }
 QTabBar::tab:selected { color: #28664f; border-bottom-color: #28664f; font-weight: 600; }
+QLabel#inProgress { color: #2878c8; background: #e7f1fc; border-radius: 5px; padding: 3px 6px; font-size: 11px; }
 QLabel#priority { color: #8a5a16; background: #fbefd5; border-radius: 5px; padding: 3px 6px; font-size: 11px; }
 QToolTip { background: #253e33; color: white; border: none; padding: 6px; }
 '''
@@ -185,6 +186,9 @@ class TaskDialog(QDialog):
             plan_row.addWidget(self.plan_today)
             plan_row.addSpacing(20)
             plan_row.addWidget(self.priority)
+            self.in_progress = QCheckBox('正在完成')
+            self.in_progress.setChecked(self.original.get('in_progress', False))
+            plan_row.addWidget(self.in_progress)
             plan_row.addStretch()
             form.addRow('任务计划', plan_row)
             form.addRow('预计用时', self.minutes)
@@ -257,6 +261,7 @@ class TaskDialog(QDialog):
         if not self.category:
             values['presentation'] = self.presentation.currentData()
             values['priority'] = self.priority.isChecked()
+            values['in_progress'] = self.in_progress.isChecked()
             values['planned_for'] = (date.today().isoformat() if self.plan_dirty or not self.original.get('planned_for') else self.original['planned_for']) if self.plan_today.isChecked() else ''
         for field, (check, editor) in self.time_inputs.items():
             values[field] = (editor.dateTime().toSecsSinceEpoch() if field in self.time_dirty else self.original.get(field, 0)) if check.isChecked() else 0
@@ -360,6 +365,10 @@ class Card(QGraphicsObject):
                 p.drawRoundedRect(QRectF(0, 0, CARD_W, self.height), 8, 8)
         else:
             p.drawRoundedRect(QRectF(0, 0, CARD_W, CARD_H), 13, 13)
+        if self.node.get('in_progress') and not self.root:
+            p.setPen(QPen(QColor('#2878c8'), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(-2, -2, CARD_W + 4, self.height + 4), 14 if not self.line else 10, 14 if not self.line else 10)
         color = '#ffffff' if self.root else INK
         p.setPen(QColor(color))
         font = QFont(self.window.font())
@@ -960,6 +969,10 @@ class Window(QMainWindow):
                 badge = QLabel('★ 优先')
                 badge.setObjectName('priority')
                 box.addWidget(badge)
+            if node.get('in_progress'):
+                progress = QLabel('正在完成')
+                progress.setObjectName('inProgress')
+                box.addWidget(progress)
             title = QLabel(node['title'])
             title.setToolTip(node['title'])
             title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)

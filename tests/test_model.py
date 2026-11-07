@@ -11,6 +11,14 @@ from task_grove.model import Forest, InvalidTree, validate
 
 
 class ForestTests(unittest.TestCase):
+    def test_in_progress_persists_and_undoes_without_changing_plan(self):
+        self.f.edit(self.a,in_progress=True)
+        self.assertTrue(Forest(self.path).nodes[self.a]['in_progress'])
+        self.assertFalse(self.f.nodes[self.a].get('priority',False))
+        self.f.undo()
+        self.assertFalse(self.f.nodes[self.a].get('in_progress',False))
+        with self.assertRaises(InvalidTree):self.f.edit(self.a,in_progress='yes')
+
     def test_priority_later_excludes_today_and_carryover(self):
         now = datetime(2026,11,7,12).timestamp()
         later = self.f.add('未来优先',self.r,priority=True,start_at=now+86400)

@@ -93,6 +93,8 @@ def validate(data):
             raise InvalidTree('截止时间不能早于开始时间')
         if type(n.get('priority', False)) is not bool:
             raise InvalidTree('优先标记格式错误')
+        if type(n.get('in_progress', False)) is not bool:
+            raise InvalidTree('正在完成标记格式错误')
         planned = n.get('planned_for', '')
         if not isinstance(planned, str):
             raise InvalidTree('预计完成日期格式错误')
@@ -226,7 +228,7 @@ class Forest:
             pending.extend(nodes[item]['children'] + nodes[item].get('details', []))
         return result
 
-    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card', planned_for='', priority=False):
+    def add(self, title, target=None, mode='child', minutes=0, start_at=0, due_at=0, presentation='card', planned_for='', priority=False, in_progress=False):
         title = title.strip()
         if not title:
             raise InvalidTree('请填写任务名称')
@@ -237,7 +239,7 @@ class Forest:
         def action(data):
             nodes = data['nodes']
             node = dict(title=title, kind='task' if target else 'category', children=[],
-                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation, planned_for=planned_for, priority=priority)
+                        minutes=minutes, start_at=start_at, due_at=due_at, collapsed=False, presentation=presentation, planned_for=planned_for, priority=priority, in_progress=in_progress)
             if target is None:
                 data['roots'].append(key)
             elif presentation == 'line':
@@ -292,7 +294,7 @@ class Forest:
         return self.change(action)
 
     def edit(self, key, **values):
-        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed', 'presentation', 'planned_for', 'priority'}
+        allowed = {'title', 'minutes', 'start_at', 'due_at', 'collapsed', 'presentation', 'planned_for', 'priority', 'in_progress'}
         if key == self.inbox and values.get('title', INBOX_TITLE) != INBOX_TITLE:
             raise InvalidTree('零散任务是常驻分类，不能重命名')
         if set(values) - allowed:
