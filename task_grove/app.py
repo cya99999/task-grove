@@ -827,7 +827,7 @@ class Window(QMainWindow):
         content.addLayout(ready_top)
         self.ready_list = QListWidget()
         self.ready_list.setObjectName('ready')
-        self.ready_list.setFixedHeight(136)
+        self.ready_list.setFixedHeight(224)
         content.addWidget(self.ready_list)
         self.status = QLabel('任务只保存在这台电脑上 · 改动自动保存')
         self.status.setObjectName('muted')
