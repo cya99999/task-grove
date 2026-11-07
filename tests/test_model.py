@@ -11,6 +11,34 @@ from task_grove.model import Forest, InvalidTree, validate
 
 
 class ForestTests(unittest.TestCase):
+    def test_completion_history_promotes_steps_and_undo_removes_record(self):
+        child = self.f.add('下一步', self.a)
+        with patch('task_grove.model.time.time', return_value=1700000000):
+            self.f.complete(self.a)
+            records = self.f.completed(now=1700000000)
+        self.assertEqual(records[0]['title'], '运行')
+        self.assertEqual(records[0]['category'], '开发')
+        self.assertEqual(self.f.parent(child), self.r)
+        self.f.undo()
+        self.assertIn(self.a, self.f.nodes)
+        self.assertEqual(self.f.completed(), [])
+        self.f.complete(self.a, record=False)
+        self.assertEqual(self.f.completed(), [])
+
+    def test_completion_retention_is_seven_calendar_dates_and_prunes_on_save(self):
+        now = datetime.now().replace(hour=12, minute=0, second=0).timestamp()
+        day = datetime.fromtimestamp(now)
+        def record(days):
+            return dict(id=str(days),title='记录',category='开发',completed_at=(day-timedelta(days=days)).replace(hour=0).timestamp())
+        self.f.data['completed'] = [record(6),record(7),record(0)]
+        self.assertEqual([r['id'] for r in self.f.completed(now)], ['0','6'])
+        with patch('task_grove.model.time.time',return_value=now):
+            self.f.edit(self.a,title='更新')
+        self.assertEqual([r['id'] for r in self.f.data['completed']], ['0','6'])
+        self.assertEqual(Forest(self.path).data['completed'],self.f.data['completed'])
+        broken = copy.deepcopy(self.f.data);broken['completed'][0]['completed_at']='invalid'
+        with self.assertRaises(InvalidTree):validate(broken)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import os
 from pathlib import Path
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsObject, QMenu,
     QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QMessageBox,
     QFileDialog, QSystemTrayIcon, QFrame, QAbstractItemView, QSizePolicy,
-    QCheckBox, QDateTimeEdit, QPlainTextEdit, QTabBar)
+    QCheckBox, QDateTimeEdit, QPlainTextEdit, QTabBar, QSplitter)
 
 from .model import Forest, InvalidTree
 from . import desktop
@@ -439,9 +439,13 @@ class Card(QGraphicsObject):
         painter.end()
         drag.setPixmap(pix)
         drag.setHotSpot(event.pos().toPoint())
-        self.window.message('拖到节点中间：接为后续；上 / 下边缘：调整同层顺序；左侧类别：跨类移动')
-        drag.exec(Qt.DropAction.MoveAction)
-        self.window.view.clear_drop()
+        self.window.message('虚线预览最近节点；松开接入；节点上 / 下边缘调整同层顺序')
+        self.window.view.dragging = True
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self.window.view.dragging = False
+            self.window.view.clear_drop()
         self.pressed = None
 
     def mouseReleaseEvent(self, event):
@@ -577,12 +581,18 @@ class ForestView(QGraphicsView):
         except UnicodeError:
             return None
         scene_pos = self.mapToScene(event.position().toPoint())
+        candidates = []
         for target, card in self.cards.items():
             local = card.mapFromScene(scene_pos)
-            if QRectF(0, 0, CARD_W, card.height).contains(local):
-                mode = 'child' if card.root else ('before' if local.y() < card.height * .24 else 'after' if local.y() > card.height * .76 else 'child')
-                if self.window.forest.can_move(key, target, mode):
-                    return key, target, mode
+            inside = QRectF(0, 0, CARD_W, card.height).contains(local)
+            mode = 'child' if not inside or card.root else ('before' if local.y() < card.height * .24 else 'after' if local.y() > card.height * .76 else 'child')
+            if self.window.forest.can_move(key, target, mode):
+                dx = max(0, -local.x(), local.x() - CARD_W)
+                dy = max(0, -local.y(), local.y() - card.height)
+                candidates.append((dx*dx + dy*dy, target, mode))
+        if candidates:
+            _, target, mode = min(candidates)
+            return key, target, mode
         return None
 
     def dragEnterEvent(self, event):
@@ -597,12 +607,11 @@ class ForestView(QGraphicsView):
         if target:
             key, dest, mode = target
             card = self.cards[dest]
-            if mode == 'child':
-                rect = QRectF(card.x() - 3, card.y() - 3, CARD_W + 6, card.height + 6)
-                self.drop_hint = self.scene().addRect(rect, QPen(QColor('#5f9e75'), 3), QBrush(QColor(90, 160, 110, 35)))
-            else:
-                y = card.y() - 5 if mode == 'before' else card.y() + card.height + 5
-                self.drop_hint = self.scene().addLine(card.x(), y, card.x() + CARD_W, y, QPen(QColor('#5f9e75'), 4))
+            end = self.mapToScene(event.position().toPoint())
+            start = card.pos() + QPointF(CARD_W, card.anchor_y)
+            path = QPainterPath(start)
+            path.cubicTo(start + QPointF(45, 0), end - QPointF(45, 0), end)
+            self.drop_hint = self.scene().addPath(path, QPen(QColor('#5f9e75'), 2.5, Qt.PenStyle.DashLine))
             self.drop_hint.setZValue(5)
             self.drop_target = target
             self.window.message({'child': '松开：接为这个节点的后续分支', 'before': '松开：移到这个节点前面（同层）', 'after': '松开：移到这个节点后面（同层）'}[mode])
@@ -803,15 +812,29 @@ class Window(QMainWindow):
         help_text.setObjectName('muted')
         content.addWidget(help_text)
         self.view = ForestView(self)
-        content.addWidget(self.view, 1)
+        self.bottom_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.bottom_splitter.setChildrenCollapsible(False)
+        self.bottom_splitter.setHandleWidth(8)
+        self.bottom_splitter.setStyleSheet('QSplitter::handle:vertical { background: #d6e2d0; border-radius: 3px; }')
+        self.view.setMinimumHeight(100)
+        self.bottom_splitter.addWidget(self.view)
+        bottom = QWidget()
+        bottom.setMinimumHeight(120)
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        self.bottom_splitter.addWidget(bottom)
+        self.bottom_splitter.setStretchFactor(0, 1)
+        self.bottom_splitter.setStretchFactor(1, 0)
+        content.addWidget(self.bottom_splitter, 1)
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setStyleSheet('color: #e0e7da;')
-        content.addWidget(divider)
+        bottom_layout.addWidget(divider)
         ready_top = QHBoxLayout()
         self.task_tabs = QTabBar()
         self.task_tabs.addTab('今日预计完成')
         self.task_tabs.addTab('已定时任务')
+        self.task_tabs.addTab('已完成')
         self.task_tabs.setExpanding(False)
         self.task_tabs.setDrawBase(False)
         self.task_tabs.currentChanged.connect(self.refresh_bottom)
@@ -824,11 +847,15 @@ class Window(QMainWindow):
             self.time_filter.addItem(title, value)
         self.time_filter.currentIndexChanged.connect(self.refresh_bottom)
         ready_top.addWidget(self.time_filter)
-        content.addLayout(ready_top)
+        bottom_layout.addLayout(ready_top)
         self.ready_list = QListWidget()
         self.ready_list.setObjectName('ready')
-        self.ready_list.setFixedHeight(224)
-        content.addWidget(self.ready_list)
+        bottom_layout.addWidget(self.ready_list, 1)
+        self.bottom_splitter.setSizes([360, 270])
+        saved = self.settings.value('bottomSplitter')
+        if saved is not None:
+            self.bottom_splitter.restoreState(saved)
+        self.bottom_splitter.splitterMoved.connect(lambda *_: self.settings.setValue('bottomSplitter', self.bottom_splitter.saveState()))
         self.status = QLabel('任务只保存在这台电脑上 · 改动自动保存')
         self.status.setObjectName('muted')
         self.status.setWordWrap(True)
@@ -888,6 +915,26 @@ class Window(QMainWindow):
     def refresh_bottom(self):
         scroll = self.ready_list.verticalScrollBar().value()
         self.ready_list.clear()
+        completed = self.task_tabs.currentIndex() == 2
+        if completed:
+            self.time_filter.hide()
+            records = self.forest.completed()
+            self.ready_label.setText(f'{len(records)} 项 · 最近七天')
+            day = None
+            for record in records:
+                stamp = datetime.fromtimestamp(record['completed_at'])
+                if stamp.date() != day:
+                    day = stamp.date()
+                    heading = QListWidgetItem(stamp.strftime('%Y-%m-%d'))
+                    heading.setFlags(Qt.ItemFlag.NoItemFlags)
+                    self.ready_list.addItem(heading)
+                item = QListWidgetItem(f"✓ {record['title']}  ·  {record['category']}  ·  {stamp:%H:%M}")
+                item.setToolTip(item.text())
+                self.ready_list.addItem(item)
+            if not records:
+                self.ready_list.addItem('最近七天暂无已完成任务。')
+            self.ready_list.verticalScrollBar().setValue(scroll)
+            return
         scheduled = self.task_tabs.currentIndex() == 1
         self.time_filter.setVisible(scheduled)
         tasks = self.forest.scheduled(self.time_filter.currentData() or 'all') if scheduled else self.forest.planned_today()
@@ -1062,9 +1109,10 @@ class Window(QMainWindow):
             '• 右键直接打开编辑页，可以改名、定时、完成或删除。\n'
             '• 单击节点添加后续、前后插入、同层任务或当前步骤的细节。\n'
             '• 细分支是当前步骤的附属细节，不占后续主线；完成母步骤时一并移除。\n'
-            '• 拖到中间接为后续；上/下边缘同层重排；左侧类别跨类移动。\n'
+            '• 拖动时虚线预览最近节点，松开接入；上/下边缘同层重排。\n'
             '• 底部默认显示今日预计任务，今日定时自动列入，未完成任务自动顺延。\n'
-            '• 勾选「优先」后加星标并在两个列表置顶；可切换查看已定时任务。\n'
+            '• 优先任务在今日和定时列表置顶；拖动底栏分隔条调整高度。\n'
+            '• 「已完成」按日期显示最近七天；撤销完成会一并撤销记录。\n'
             '• 提前 1 小时、10 分钟及到时提醒；开机汇总今日未完成任务。\n'
             '• 所有任务树默认收起步骤；点击小箭头或左侧类别展开。\n'
             '• Ctrl+Z 撤销，Ctrl+Shift+Z 重做；Ctrl+滚轮缩放。\n'
@@ -1115,6 +1163,8 @@ class Window(QMainWindow):
         self.message(title + ' · ' + body.replace('\n', ' · '))
 
     def tick(self):
+        if getattr(self.view, 'dragging', False):
+            return
         try:
             self.reminders.poll(self.forest, self.notify)
         except OSError as error:

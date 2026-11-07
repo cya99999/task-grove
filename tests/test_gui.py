@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QPointF, QMimeData, QDateTime
 from PySide6.QtGui import QDropEvent, QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QLabel
-from task_grove.app import Window, STYLE, MIME, TaskDialog, FineBranchesDialog, apply_theme
+from task_grove.app import Window, STYLE, MIME, TaskDialog, FineBranchesDialog, apply_theme, CARD_W
 from task_grove.model import Forest
 
 APP = QApplication.instance() or QApplication([])
@@ -22,6 +22,22 @@ apply_theme(APP)
 
 
 class GuiTests(unittest.TestCase):
+    def test_bottom_resize_and_completed_tab(self):
+        self.window.bottom_splitter.setSizes([180,300]);APP.processEvents()
+        self.assertGreater(self.window.ready_list.height(),150)
+        self.forest.complete('readlog')
+        self.window.task_tabs.setCurrentIndex(2);APP.processEvents()
+        texts=[self.window.ready_list.item(i).text() for i in range(self.window.ready_list.count())]
+        self.assertTrue(any('✓' in text for text in texts))
+        self.assertFalse(self.window.time_filter.isVisible())
+
+    def test_empty_space_drop_chooses_nearest_valid_node(self):
+        view=self.window.view;card=view.cards['life']
+        mime=QMimeData();mime.setData(MIME,b'readlog')
+        pos=view.mapFromScene(card.pos()+QPointF(CARD_W+18,40))
+        event=QDropEvent(QPointF(pos),Qt.DropAction.MoveAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+        self.assertEqual(view.locate_drop(event),('readlog','life','child'))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.forest = Forest(Path(self.tmp.name) / 'tasks.json')

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import json
 import math
 import os
@@ -31,7 +31,15 @@ def normalize(data):
         details = [key for key in original_details if data['nodes'][key].get('presentation') == 'line'] + [key for key in original_children if data['nodes'][key].get('presentation') == 'line']
         if details or 'details' in node:
             node['details'] = details
+    if 'completed' in data:
+        data['completed'] = recent_completed(data['completed'])
     return data
+
+
+def recent_completed(records, now=None):
+    now = time.time() if now is None else now
+    cutoff = datetime.fromtimestamp(now).date() - timedelta(days=6)
+    return sorted((r for r in records if datetime.fromtimestamp(r['completed_at']).date() >= cutoff), key=lambda r: r['completed_at'], reverse=True)
 
 
 class InvalidTree(ValueError):
@@ -44,6 +52,16 @@ def validate(data):
     nodes, roots = data.get('nodes'), data.get('roots')
     if not isinstance(nodes, dict) or not isinstance(roots, list) or len(nodes) > 10000:
         raise InvalidTree('任务数据不完整或节点超过 10000 个')
+    records = data.get('completed', [])
+    if not isinstance(records, list) or len(records) > 10000:
+        raise InvalidTree('已完成记录格式错误或超过 10000 条')
+    for record in records:
+        if (not isinstance(record, dict) or not isinstance(record.get('id'), str)
+                or not isinstance(record.get('title'), str) or not 1 <= len(record['title']) <= 200
+                or not isinstance(record.get('category'), str) or len(record['category']) > 200
+                or type(record.get('completed_at')) not in (int, float)
+                or not math.isfinite(record['completed_at']) or not 0 <= record['completed_at'] <= 253402300799):
+            raise InvalidTree('已完成记录格式错误')
     seen = set()
 
     def visit(key, depth):
@@ -281,12 +299,17 @@ class Forest:
             raise InvalidTree('不支持的字段')
         return self.change(lambda data: data['nodes'][key].update(values))
 
-    def complete(self, key):
+    def completed(self, now=None):
+        return recent_completed(self.data.get('completed', []), now)
+
+    def complete(self, key, record=True):
         def action(data):
             node = data['nodes'][key]
             parent = self.parent(key, data)
             if parent is None:
                 raise InvalidTree('分类不能标记完成')
+            if record:
+                data.setdefault('completed', []).append(dict(id=uuid.uuid4().hex, title=node['title'], category=data['nodes'][self.category(key)]['title'], completed_at=time.time()))
             siblings = data['nodes'][parent][self.relation(key, data)]
             index = siblings.index(key)
             siblings[index:index + 1] = node['children']
