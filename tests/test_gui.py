@@ -22,11 +22,22 @@ apply_theme(APP)
 
 
 class GuiTests(unittest.TestCase):
+    def test_today_highlights_and_later_tab_order(self):
+        self.forest.edit('readlog',priority=True,planned_for='')
+        self.window.refresh()
+        self.assertEqual([self.window.task_tabs.tabText(i) for i in range(4)],['今日预计完成','已定时任务','非今日优先','已完成'])
+        self.window.task_tabs.setCurrentIndex(2)
+        self.assertTrue(any(key=='readlog' for _,key in self.forest.priority_later()))
+        self.forest.edit('readlog',planned_for=date.today().isoformat())
+        self.window.refresh()
+        self.assertIn('readlog',self.window.view.today_keys)
+        self.assertFalse(any(key=='readlog' for _,key in self.forest.priority_later()))
+
     def test_bottom_resize_and_completed_tab(self):
         self.window.bottom_splitter.setSizes([180,300]);APP.processEvents()
         self.assertGreater(self.window.ready_list.height(),150)
         self.forest.complete('readlog')
-        self.window.task_tabs.setCurrentIndex(2);APP.processEvents()
+        self.window.task_tabs.setCurrentIndex(3);APP.processEvents()
         texts=[self.window.ready_list.item(i).text() for i in range(self.window.ready_list.count())]
         self.assertTrue(any('✓' in text for text in texts))
         self.assertFalse(self.window.time_filter.isVisible())

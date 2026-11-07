@@ -389,6 +389,11 @@ class Forest:
                 result.append((self.category(key), key))
         return sorted(result, key=lambda pair: not self.nodes[pair[1]].get('priority', False))
 
+    def priority_later(self, now=None):
+        today = {key for _, key in self.planned_today(now)}
+        return [(self.category(key), key) for key, node in self.nodes.items()
+                if node['kind'] == 'task' and node.get('priority', False) and key not in today]
+
     def today_source(self, key, now=None):
         now = time.time() if now is None else now
         today = datetime.fromtimestamp(now).date()

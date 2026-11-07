@@ -345,12 +345,19 @@ class Card(QGraphicsObject):
         border = '#28664f' if self.key == self.window.selected_node else '#d7e3d3'
         if matched:
             border = '#e2a43d'
-        p.setPen(QPen(QColor(border), 2 if self.hover or matched or self.key == self.window.selected_node else 1))
+        today = self.key in getattr(self.window.view, 'today_keys', set())
+        if today:
+            border = '#c94e4e'
+        p.setPen(QPen(QColor(border), 2 if today or self.hover or matched or self.key == self.window.selected_node else 1))
         p.setBrush(QColor(fill))
         if self.line:
             line_color = '#d6a043' if matched else GREEN if self.hover or self.key == self.window.selected_node else '#a2b99b'
             p.setPen(QPen(QColor(line_color), 2 if self.hover or self.key == self.window.selected_node or matched else 1.3))
             p.drawLine(QPointF(0, self.anchor_y), QPointF(CARD_W, self.anchor_y))
+            if today:
+                p.setPen(QPen(QColor('#c94e4e'), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(QRectF(0, 0, CARD_W, self.height), 8, 8)
         else:
             p.drawRoundedRect(QRectF(0, 0, CARD_W, CARD_H), 13, 13)
         color = '#ffffff' if self.root else INK
@@ -495,6 +502,7 @@ class ForestView(QGraphicsView):
         self.scene().clear()
         self.cards = {}
         model = self.window.forest
+        self.today_keys = {key for _, key in model.planned_today()}
         roots = model.data['roots']
         if self.window.selected in roots:
             roots = [self.window.selected]
@@ -834,6 +842,7 @@ class Window(QMainWindow):
         self.task_tabs = QTabBar()
         self.task_tabs.addTab('今日预计完成')
         self.task_tabs.addTab('已定时任务')
+        self.task_tabs.addTab('非今日优先')
         self.task_tabs.addTab('已完成')
         self.task_tabs.setExpanding(False)
         self.task_tabs.setDrawBase(False)
@@ -913,9 +922,10 @@ class Window(QMainWindow):
         self.refresh_bottom()
 
     def refresh_bottom(self):
+        self.view.today_keys = {key for _, key in self.forest.planned_today()}
         scroll = self.ready_list.verticalScrollBar().value()
         self.ready_list.clear()
-        completed = self.task_tabs.currentIndex() == 2
+        completed = self.task_tabs.currentIndex() == 3
         if completed:
             self.time_filter.hide()
             records = self.forest.completed()
@@ -937,7 +947,8 @@ class Window(QMainWindow):
             return
         scheduled = self.task_tabs.currentIndex() == 1
         self.time_filter.setVisible(scheduled)
-        tasks = self.forest.scheduled(self.time_filter.currentData() or 'all') if scheduled else self.forest.planned_today()
+        later = self.task_tabs.currentIndex() == 2
+        tasks = self.forest.scheduled(self.time_filter.currentData() or 'all') if scheduled else self.forest.priority_later() if later else self.forest.planned_today()
         self.ready_label.setText(f'{len(tasks)} 项')
         for root, key in tasks:
             node = self.forest.nodes[key]
@@ -954,7 +965,9 @@ class Window(QMainWindow):
             title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             box.addWidget(title, 1)
             details = schedule_text(node)
-            if not scheduled:
+            if later:
+                details = ('预计 ' + node['planned_for'] if node.get('planned_for') else '未安排今日') + (' · ' + details if details else '')
+            elif not scheduled:
                 details = self.forest.today_source(key) + (' · ' + details if details else '')
             meta = QLabel(details)
             meta.setMaximumWidth(245)
@@ -970,7 +983,7 @@ class Window(QMainWindow):
             self.ready_list.addItem(item)
             self.ready_list.setItemWidget(item, row)
         if not tasks:
-            self.ready_list.addItem('暂无定时任务。编辑任一任务，指定开始或截止时间。' if scheduled else '今日暂无预计任务。编辑节点勾选「建议今日完成」，今日定时任务也会自动列入。')
+            self.ready_list.addItem('暂无非今日优先任务。勾选「优先」且未列入今日的任务会显示在这里。' if later else ('暂无定时任务。编辑任一任务，指定开始或截止时间。' if scheduled else '今日暂无预计任务。编辑节点勾选「建议今日完成」，今日定时任务也会自动列入。'))
         self.ready_list.verticalScrollBar().setValue(scroll)
 
     def find_task(self, text):

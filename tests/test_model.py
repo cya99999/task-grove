@@ -11,6 +11,16 @@ from task_grove.model import Forest, InvalidTree, validate
 
 
 class ForestTests(unittest.TestCase):
+    def test_priority_later_excludes_today_and_carryover(self):
+        now = datetime(2026,11,7,12).timestamp()
+        later = self.f.add('未来优先',self.r,priority=True,start_at=now+86400)
+        unplanned = self.f.add('未定优先',self.r,priority=True)
+        self.f.add('今日优先',self.r,priority=True,planned_for='2026-11-07')
+        self.f.add('顺延优先',self.r,priority=True,planned_for='2026-11-06')
+        self.f.add('今日定时优先',self.r,priority=True,due_at=now+3600)
+        self.f.add('普通未来',self.r,start_at=now+86400)
+        self.assertEqual({key for _,key in self.f.priority_later(now)},{later,unplanned})
+
     def test_completion_history_promotes_steps_and_undo_removes_record(self):
         child = self.f.add('下一步', self.a)
         with patch('task_grove.model.time.time', return_value=1700000000):
