@@ -22,6 +22,13 @@ apply_theme(APP)
 
 
 class GuiTests(unittest.TestCase):
+    def test_small_completed_prefix(self):
+        key=self.forest.add_lines('read',['检查细节'])[0]
+        self.forest.complete(key)
+        self.window.task_tabs.setCurrentIndex(3);APP.processEvents()
+        rows=[self.window.ready_list.item(i).text() for i in range(self.window.ready_list.count())]
+        self.assertTrue(any('✓ （小）检查细节' in text for text in rows))
+
     def test_in_progress_edit_and_badge_coexist_with_today_and_priority(self):
         self.forest.edit('readlog',priority=True,planned_for=date.today().isoformat())
         dialog=TaskDialog(self.window,'编辑任务',self.forest.nodes['readlog'])

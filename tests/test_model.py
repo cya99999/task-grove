@@ -11,6 +11,14 @@ from task_grove.model import Forest, InvalidTree, validate
 
 
 class ForestTests(unittest.TestCase):
+    def test_small_completion_preserves_presentation_without_changing_title(self):
+        key=self.f.add_lines(self.a,['检查细节'])[0]
+        self.f.complete(key)
+        record=self.f.completed()[0]
+        self.assertEqual(record['presentation'],'line')
+        self.assertEqual(record['title'],'检查细节')
+        self.assertEqual(Forest(self.path).completed()[0]['presentation'],'line')
+
     def test_in_progress_persists_and_undoes_without_changing_plan(self):
         self.f.edit(self.a,in_progress=True)
         self.assertTrue(Forest(self.path).nodes[self.a]['in_progress'])

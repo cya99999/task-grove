@@ -947,7 +947,8 @@ class Window(QMainWindow):
                     heading = QListWidgetItem(stamp.strftime('%Y-%m-%d'))
                     heading.setFlags(Qt.ItemFlag.NoItemFlags)
                     self.ready_list.addItem(heading)
-                item = QListWidgetItem(f"✓ {record['title']}  ·  {record['category']}  ·  {stamp:%H:%M}")
+                small = '（小）' if record.get('presentation') == 'line' else ''
+                item = QListWidgetItem(f"✓ {small}{record['title']}  ·  {record['category']}  ·  {stamp:%H:%M}")
                 item.setToolTip(item.text())
                 self.ready_list.addItem(item)
             if not records:

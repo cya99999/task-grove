@@ -58,6 +58,7 @@ def validate(data):
     for record in records:
         if (not isinstance(record, dict) or not isinstance(record.get('id'), str)
                 or not isinstance(record.get('title'), str) or not 1 <= len(record['title']) <= 200
+                or record.get('presentation', 'card') not in ('card', 'line')
                 or not isinstance(record.get('category'), str) or len(record['category']) > 200
                 or type(record.get('completed_at')) not in (int, float)
                 or not math.isfinite(record['completed_at']) or not 0 <= record['completed_at'] <= 253402300799):
@@ -311,7 +312,7 @@ class Forest:
             if parent is None:
                 raise InvalidTree('分类不能标记完成')
             if record:
-                data.setdefault('completed', []).append(dict(id=uuid.uuid4().hex, title=node['title'], category=data['nodes'][self.category(key)]['title'], completed_at=time.time()))
+                data.setdefault('completed', []).append(dict(id=uuid.uuid4().hex, title=node['title'], category=data['nodes'][self.category(key)]['title'], presentation=node.get('presentation', 'card'), completed_at=time.time()))
             siblings = data['nodes'][parent][self.relation(key, data)]
             index = siblings.index(key)
             siblings[index:index + 1] = node['children']
